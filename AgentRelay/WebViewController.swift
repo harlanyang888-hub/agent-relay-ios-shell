@@ -9,8 +9,8 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // 设置与应用完全一致的深色底色，消除任何可能的黑边闪烁
-        view.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
+        // 状态栏与顶层背景色与应用完全一致 (#0a0b0d)
+        view.backgroundColor = UIColor(red: 10/255.0, green: 11/255.0, blue: 13/255.0, alpha: 1.0)
         setupWebView()
         setupIndicator()
         loadTargetURL()
@@ -34,7 +34,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         
-        // 核心适配：全透明穿透，完全由网页 CSS 自行处理 safe-area，彻底消除双重底部间隙与大黑边
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
@@ -46,9 +45,11 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         
         view.addSubview(webView)
 
-        // 铺满物理屏幕 100%
+        // 核心布局：
+        // 1. 顶部严格对齐 safeAreaLayoutGuide.topAnchor，物理级避开时间、电量、灵动岛，绝对零重叠！
+        // 2. 底部直通 view.bottomAnchor，100% 满屏无黑边！
         NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: view.topAnchor),
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
