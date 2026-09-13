@@ -4,6 +4,7 @@ import WebKit
 class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     private var webView: WKWebView!
     private var activityIndicator: UIActivityIndicatorView!
+    private var pendingTargetURL: URL?
 
     private let targetURLString = "https://complicated.taildbe095.ts.net:8443"
 
@@ -13,7 +14,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         view.backgroundColor = UIColor(red: 10/255.0, green: 11/255.0, blue: 13/255.0, alpha: 1.0)
         setupWebView()
         setupIndicator()
-        loadTargetURL()
+        loadInitialURL()
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
@@ -69,8 +70,10 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         ])
     }
 
-    private func loadTargetURL() {
-        guard let url = URL(string: targetURLString) else { return }
+    private func loadInitialURL() {
+        let destination = pendingTargetURL ?? URL(string: targetURLString)
+        pendingTargetURL = nil
+        guard let url = destination else { return }
         activityIndicator.startAnimating()
         let request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30)
         webView.load(request)
@@ -78,6 +81,10 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         activityIndicator.stopAnimating()
+        if let pending = pendingTargetURL {
+            pendingTargetURL = nil
+            webView.load(URLRequest(url: pending))
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -108,11 +115,25 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         let path = components.path.lowercased()
 
         if host == "chat" || path == "/chat" || host == "ask" || path == "/ask" {
-            let text = components.queryItems?.first(where: { $0.name == "text" || $0.name == "prompt" || $0.name == "q" })?.value ?? ""
-            if !text.isEmpty {
-                if let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                   let targetURL = URL(string: "\(targetURLString)?prompt=\(encoded)") {
-                    webView.load(URLRequest(url: targetURL))
+            var destURLString: String? = nil
+            if let conversationId = components.queryItems?.first(where: { $0.name == "conversationId" || $0.name == "conversation" || $0.name == "id" })?.value, !conversationId.isEmpty {
+                destURLString = "\(targetURLString)/?conversation=\(conversationId)"
+            } else if let text = components.queryItems?.first(where: { $0.name == "text" || $0.name == "prompt" || $0.name == "q" })?.value, !text.isEmpty {
+                let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                destURLString = "\(targetURLString)/?prompt=\(encoded)"
+            }
+
+            if let dest = destURLString, let destURL = URL(string: dest) {
+                if webView == nil {
+                    pendingTargetURL = destURL
+                } else {
+                    let targetPath = "/?\(destURL.query ?? "")"
+                    let js = "window.location.href = '\(targetPath)';"
+                    webView.evaluateJavaScript(js) { [weak self] (_, error) in
+                        if error != nil {
+                            self?.webView.load(URLRequest(url: destURL))
+                        }
+                    }
                 }
             }
         }
