@@ -1,6 +1,7 @@
 import UIKit
 import Social
 import UniformTypeIdentifiers
+import ImageIO
 
 struct SharedAttachmentItem {
     let filename: String
@@ -22,30 +23,58 @@ class ShareViewController: UIViewController {
     private let authToken = "36a019b34a706c581073c07157aeef9b64738026b920972e4d34d0a27919d548"
 
     private var progressAlert: UIAlertController?
+    private var loadingIndicator: UIActivityIndicatorView?
+    private var isProcessing = false
+    private var hasHandled = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(white: 0, alpha: 0.3)
+        view.backgroundColor = UIColor(white: 0, alpha: 0.35)
 
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleBackgroundTap))
+        tapGesture.cancelsTouchesInView = false
         view.addGestureRecognizer(tapGesture)
+
+        setupLoadingIndicator()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        guard !hasHandled else { return }
+        hasHandled = true
         handleSharedContent()
     }
 
+    private func setupLoadingIndicator() {
+        let indicator = UIActivityIndicatorView(style: .large)
+        indicator.color = .white
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.hidesWhenStopped = true
+        view.addSubview(indicator)
+        NSLayoutConstraint.activate([
+            indicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            indicator.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+        self.loadingIndicator = indicator
+    }
+
     @objc private func handleBackgroundTap() {
+        // Prevent accidental dismissal while processing files or showing alerts
+        if isProcessing || presentedViewController != nil || progressAlert != nil {
+            return
+        }
         dismissExtension()
     }
 
-    // MARK: - 多附件异步提取
+    // MARK: - 多附件异步提取与安全降采样
     private func handleSharedContent() {
         guard let extensionItems = extensionContext?.inputItems as? [NSExtensionItem], !extensionItems.isEmpty else {
             dismissExtension()
             return
         }
+
+        isProcessing = true
+        loadingIndicator?.startAnimating()
 
         var shareData = ParsedShareData()
         let group = DispatchGroup()
@@ -71,67 +100,46 @@ class ShareViewController: UIViewController {
                         urlProviders.append(provider)
                     } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                         textProviders.append(provider)
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.content.identifier) {
                         fileProviders.append(provider)
                     }
                 }
             }
         }
 
-        // 解析多张图片
+        // 1. 解析图片 (采用 ImageIO 极速低内存降采样，严防 iOS 扩展 60MB 内存溢出)
         for (index, provider) in imageProviders.enumerated() {
             group.enter()
             let defaultName = "image_\(index + 1).jpg"
-            provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { (item, _) in
+            let typeId = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) ?? UTType.image.identifier
+            provider.loadItem(forTypeIdentifier: typeId, options: nil) { [weak self] (item, _) in
                 defer { group.leave() }
-                if let imageURL = item as? URL, let data = try? Data(contentsOf: imageURL), let image = UIImage(data: data) {
-                    if let fileItem = self.compressAndEncodeImage(image, filename: imageURL.lastPathComponent) {
-                        DispatchQueue.main.async {
-                            shareData.attachments.append(fileItem)
-                        }
-                    }
-                } else if let image = item as? UIImage {
-                    if let fileItem = self.compressAndEncodeImage(image, filename: defaultName) {
-                        DispatchQueue.main.async {
-                            shareData.attachments.append(fileItem)
-                        }
-                    }
-                } else if let data = item as? Data, let image = UIImage(data: data) {
-                    if let fileItem = self.compressAndEncodeImage(image, filename: defaultName) {
-                        DispatchQueue.main.async {
-                            shareData.attachments.append(fileItem)
-                        }
+                guard let self = self else { return }
+                if let fileItem = self.processImageItem(item, defaultName: defaultName) {
+                    DispatchQueue.main.async {
+                        shareData.attachments.append(fileItem)
                     }
                 }
             }
         }
 
-        // 解析通用文件 (文档/压缩包/其他)
+        // 2. 解析通用文件 (PDF, 文档, 压缩包等，带 Security-Scoped 权限支持)
         for (index, provider) in fileProviders.enumerated() {
             group.enter()
+            let defaultName = "file_\(index + 1).bin"
             let typeId = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
-            provider.loadItem(forTypeIdentifier: typeId, options: nil) { (item, _) in
+            provider.loadItem(forTypeIdentifier: typeId, options: nil) { [weak self] (item, _) in
                 defer { group.leave() }
-                if let fileURL = item as? URL, let data = try? Data(contentsOf: fileURL) {
-                    let filename = fileURL.lastPathComponent
-                    let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                    if let fileItem = self.encodeGenericFile(data: data, filename: filename, mimeType: mimeType) {
-                        DispatchQueue.main.async {
-                            shareData.attachments.append(fileItem)
-                        }
-                    }
-                } else if let data = item as? Data {
-                    let filename = "file_\(index + 1).bin"
-                    if let fileItem = self.encodeGenericFile(data: data, filename: filename, mimeType: "application/octet-stream") {
-                        DispatchQueue.main.async {
-                            shareData.attachments.append(fileItem)
-                        }
+                guard let self = self else { return }
+                if let fileItem = self.processGenericFileItem(item, defaultName: defaultName) {
+                    DispatchQueue.main.async {
+                        shareData.attachments.append(fileItem)
                     }
                 }
             }
         }
 
-        // 解析网页链接
+        // 3. 解析网页链接
         for provider in urlProviders {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, _) in
@@ -144,7 +152,7 @@ class ShareViewController: UIViewController {
             }
         }
 
-        // 解析纯文本
+        // 4. 解析纯文本
         for provider in textProviders {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, _) in
@@ -163,34 +171,105 @@ class ShareViewController: UIViewController {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
+            self.isProcessing = false
+            self.loadingIndicator?.stopAnimating()
+
             if shareData.attachments.isEmpty && shareData.urls.isEmpty && shareData.text.isEmpty && shareData.title.isEmpty {
-                self.dismissExtension()
+                // 如果没有成功读取到任何有效内容，弹出提示而不是闪退/直接退出
+                let alert = UIAlertController(title: "提示", message: "未能读取所选文件内容，请检查文件权限或重试", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "确定", style: .default, handler: { _ in
+                    self.dismissExtension()
+                }))
+                self.present(alert, animated: true, completion: nil)
             } else {
                 self.showMainMenu(with: shareData)
             }
         }
     }
 
-    private func compressAndEncodeImage(_ image: UIImage, filename: String) -> SharedAttachmentItem? {
-        let maxDimension: CGFloat = 1600.0
-        var targetImage = image
-        if image.size.width > maxDimension || image.size.height > maxDimension {
-            let scale = min(maxDimension / image.size.width, maxDimension / image.size.height)
-            let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            if let resized = UIGraphicsGetImageFromCurrentImageContext() {
-                targetImage = resized
+    // MARK: - 内存安全型图片处理 (ImageIO)
+    private func processImageItem(_ item: NSSecureCoding?, defaultName: String) -> SharedAttachmentItem? {
+        if let imageURL = item as? URL {
+            let filename = imageURL.lastPathComponent.isEmpty ? defaultName : imageURL.lastPathComponent
+            let hasSecurityScope = imageURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasSecurityScope {
+                    imageURL.stopAccessingSecurityScopedResource()
+                }
             }
-            UIGraphicsEndImageContext()
+            return downsampleImage(from: imageURL, filename: filename)
+        } else if let image = item as? UIImage {
+            return downsampleUIImage(image, filename: defaultName)
+        } else if let data = item as? Data {
+            return downsampleImageData(data, filename: defaultName)
         }
+        return nil
+    }
 
-        guard let jpegData = targetImage.jpegData(compressionQuality: 0.8) else { return nil }
+    private func downsampleImage(from url: URL, filename: String, maxDimension: CGFloat = 1600.0) -> SharedAttachmentItem? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            if let data = try? Data(contentsOf: url) {
+                return downsampleImageData(data, filename: filename, maxDimension: maxDimension)
+            }
+            return nil
+        }
+        return createThumbnailItem(from: source, filename: filename, maxDimension: maxDimension)
+    }
+
+    private func downsampleImageData(_ data: Data, filename: String, maxDimension: CGFloat = 1600.0) -> SharedAttachmentItem? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+        return createThumbnailItem(from: source, filename: filename, maxDimension: maxDimension)
+    }
+
+    private func downsampleUIImage(_ image: UIImage, filename: String, maxDimension: CGFloat = 1600.0) -> SharedAttachmentItem? {
+        if image.size.width <= maxDimension && image.size.height <= maxDimension {
+            guard let jpegData = image.jpegData(compressionQuality: 0.8) else { return nil }
+            let base64 = jpegData.base64EncodedString()
+            let dataUrl = "data:image/jpeg;base64,\(base64)"
+            let safeName = filename.hasSuffix(".jpg") || filename.hasSuffix(".png") ? filename : "\(filename).jpg"
+            return SharedAttachmentItem(filename: safeName, mimeType: "image/jpeg", dataUrl: dataUrl, size: jpegData.count)
+        }
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return nil }
+        return downsampleImageData(data, filename: filename, maxDimension: maxDimension)
+    }
+
+    private func createThumbnailItem(from source: CGImageSource, filename: String, maxDimension: CGFloat) -> SharedAttachmentItem? {
+        let downsampleOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else {
+            return nil
+        }
+        let uiImage = UIImage(cgImage: cgImage)
+        guard let jpegData = uiImage.jpegData(compressionQuality: 0.8) else { return nil }
         let base64 = jpegData.base64EncodedString()
         let dataUrl = "data:image/jpeg;base64,\(base64)"
-        let safeName = filename.hasSuffix(".jpg") || filename.hasSuffix(".png") ? filename : "\(filename).jpg"
-
+        let safeName = (filename.hasSuffix(".jpg") || filename.hasSuffix(".png") || filename.hasSuffix(".jpeg")) ? filename : "\(filename).jpg"
         return SharedAttachmentItem(filename: safeName, mimeType: "image/jpeg", dataUrl: dataUrl, size: jpegData.count)
+    }
+
+    // MARK: - 安全型普通文件处理
+    private func processGenericFileItem(_ item: NSSecureCoding?, defaultName: String) -> SharedAttachmentItem? {
+        if let fileURL = item as? URL {
+            let filename = fileURL.lastPathComponent.isEmpty ? defaultName : fileURL.lastPathComponent
+            let hasSecurityScope = fileURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasSecurityScope {
+                    fileURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            guard let data = try? Data(contentsOf: fileURL) else { return nil }
+            let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            return encodeGenericFile(data: data, filename: filename, mimeType: mimeType)
+        } else if let data = item as? Data {
+            return encodeGenericFile(data: data, filename: defaultName, mimeType: "application/octet-stream")
+        }
+        return nil
     }
 
     private func encodeGenericFile(data: Data, filename: String, mimeType: String) -> SharedAttachmentItem? {
@@ -403,7 +482,10 @@ class ShareViewController: UIViewController {
     private func configurePopover(for alert: UIAlertController) {
         if let popover = alert.popoverPresentationController {
             popover.sourceView = self.view
-            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+            let bounds = self.view.bounds
+            let centerX = bounds.midX > 0 ? bounds.midX : 200
+            let centerY = bounds.midY > 0 ? bounds.midY : 300
+            popover.sourceRect = CGRect(x: centerX, y: centerY, width: 1, height: 1)
             popover.permittedArrowDirections = []
         }
     }
