@@ -402,17 +402,32 @@ class ShareViewController: UIViewController {
             return
         }
 
+        var attachmentsPayload: [[String: Any]] = []
+        for item in shareData.attachments {
+            attachmentsPayload.append([
+                "filename": item.filename,
+                "mimeType": item.mimeType,
+                "dataUrl": item.dataUrl,
+                "size": item.size
+            ])
+        }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 6.0
+        request.timeoutInterval = 15.0
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "text": text,
             "sourceTitle": shareData.title.isEmpty ? "iOS 快速归档" : shareData.title,
-            "context": "来自 iOS 系统级分享"
+            "context": "来自 iOS 系统级分享",
+            "sourceKind": attachmentsPayload.isEmpty ? "manual" : "image_share"
         ]
+        if !attachmentsPayload.isEmpty {
+            payload["images"] = attachmentsPayload
+            payload["attachments"] = attachmentsPayload
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] (_, response, error) in
