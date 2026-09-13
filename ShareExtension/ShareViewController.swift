@@ -113,12 +113,16 @@ class ShareViewController: UIViewController {
             let defaultName = "image_\(index + 1).jpg"
             let typeId = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) ?? UTType.image.identifier
             provider.loadItem(forTypeIdentifier: typeId, options: nil) { [weak self] (item, _) in
-                defer { group.leave() }
-                guard let self = self else { return }
-                if let fileItem = self.processImageItem(item, defaultName: defaultName) {
-                    DispatchQueue.main.async {
+                guard let self = self else {
+                    group.leave()
+                    return
+                }
+                let fileItem = self.processImageItem(item, defaultName: defaultName)
+                DispatchQueue.main.async {
+                    if let fileItem = fileItem {
                         shareData.attachments.append(fileItem)
                     }
+                    group.leave()
                 }
             }
         }
@@ -129,12 +133,16 @@ class ShareViewController: UIViewController {
             let defaultName = "file_\(index + 1).bin"
             let typeId = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
             provider.loadItem(forTypeIdentifier: typeId, options: nil) { [weak self] (item, _) in
-                defer { group.leave() }
-                guard let self = self else { return }
-                if let fileItem = self.processGenericFileItem(item, defaultName: defaultName) {
-                    DispatchQueue.main.async {
+                guard let self = self else {
+                    group.leave()
+                    return
+                }
+                let fileItem = self.processGenericFileItem(item, defaultName: defaultName)
+                DispatchQueue.main.async {
+                    if let fileItem = fileItem {
                         shareData.attachments.append(fileItem)
                     }
+                    group.leave()
                 }
             }
         }
@@ -143,11 +151,12 @@ class ShareViewController: UIViewController {
         for provider in urlProviders {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { (item, _) in
-                defer { group.leave() }
-                if let url = item as? URL {
-                    DispatchQueue.main.async {
+                let url = item as? URL
+                DispatchQueue.main.async {
+                    if let url = url {
                         shareData.urls.append(url.absoluteString)
                     }
+                    group.leave()
                 }
             }
         }
@@ -156,15 +165,16 @@ class ShareViewController: UIViewController {
         for provider in textProviders {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { (item, _) in
-                defer { group.leave() }
-                if let text = item as? String {
-                    DispatchQueue.main.async {
+                let text = item as? String
+                DispatchQueue.main.async {
+                    if let text = text {
                         if shareData.text.isEmpty {
                             shareData.text = text
                         } else {
                             shareData.text += "\n" + text
                         }
                     }
+                    group.leave()
                 }
             }
         }
