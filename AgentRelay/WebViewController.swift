@@ -154,6 +154,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         (function() {
             try {
                 const detail = \(jsonString);
+                window.__AGENT_RELAY_PENDING_SHARE__ = detail;
                 window.dispatchEvent(new CustomEvent('agent-relay:native-share', { detail: detail }));
             } catch(e) {
                 console.error("Native share dispatch error:", e);

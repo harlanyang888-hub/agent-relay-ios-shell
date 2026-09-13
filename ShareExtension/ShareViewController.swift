@@ -53,6 +53,7 @@ class ShareViewController: UIViewController {
         var imageProviders: [NSItemProvider] = []
         var urlProviders: [NSItemProvider] = []
         var textProviders: [NSItemProvider] = []
+        var fileProviders: [NSItemProvider] = []
 
         for item in extensionItems {
             if let attributed = item.attributedContentText?.string, !attributed.isEmpty {
@@ -66,10 +67,12 @@ class ShareViewController: UIViewController {
                 for provider in attachments {
                     if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                         imageProviders.append(provider)
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                         urlProviders.append(provider)
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                         textProviders.append(provider)
+                    } else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
+                        fileProviders.append(provider)
                     }
                 }
             }
@@ -95,6 +98,31 @@ class ShareViewController: UIViewController {
                     }
                 } else if let data = item as? Data, let image = UIImage(data: data) {
                     if let fileItem = self.compressAndEncodeImage(image, filename: defaultName) {
+                        DispatchQueue.main.async {
+                            shareData.attachments.append(fileItem)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 解析通用文件 (文档/压缩包/其他)
+        for (index, provider) in fileProviders.enumerated() {
+            group.enter()
+            let typeId = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
+            provider.loadItem(forTypeIdentifier: typeId, options: nil) { (item, _) in
+                defer { group.leave() }
+                if let fileURL = item as? URL, let data = try? Data(contentsOf: fileURL) {
+                    let filename = fileURL.lastPathComponent
+                    let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                    if let fileItem = self.encodeGenericFile(data: data, filename: filename, mimeType: mimeType) {
+                        DispatchQueue.main.async {
+                            shareData.attachments.append(fileItem)
+                        }
+                    }
+                } else if let data = item as? Data {
+                    let filename = "file_\(index + 1).bin"
+                    if let fileItem = self.encodeGenericFile(data: data, filename: filename, mimeType: "application/octet-stream") {
                         DispatchQueue.main.async {
                             shareData.attachments.append(fileItem)
                         }
@@ -165,13 +193,20 @@ class ShareViewController: UIViewController {
         return SharedAttachmentItem(filename: safeName, mimeType: "image/jpeg", dataUrl: dataUrl, size: jpegData.count)
     }
 
+    private func encodeGenericFile(data: Data, filename: String, mimeType: String) -> SharedAttachmentItem? {
+        guard data.count <= 25 * 1024 * 1024 else { return nil }
+        let base64 = data.base64EncodedString()
+        let dataUrl = "data:\(mimeType);base64,\(base64)"
+        return SharedAttachmentItem(filename: filename, mimeType: mimeType, dataUrl: dataUrl, size: data.count)
+    }
+
     // MARK: - 主操作选择面板
     private func showMainMenu(with shareData: ParsedShareData) {
         let message: String
-        let hasImages = !shareData.attachments.isEmpty
-        if hasImages {
+        let hasAttachments = !shareData.attachments.isEmpty
+        if hasAttachments {
             let count = shareData.attachments.count
-            message = "已选择 \(count) 张图片" + (shareData.text.isEmpty ? "" : " · \(shareData.text.prefix(30))...")
+            message = "已选择 \(count) 个附件" + (shareData.text.isEmpty ? "" : " · \(shareData.text.prefix(30))...")
         } else if let firstUrl = shareData.urls.first {
             message = "网页: \(firstUrl)"
         } else {
