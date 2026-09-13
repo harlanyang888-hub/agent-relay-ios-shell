@@ -123,8 +123,8 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         if host == "share" || path == "/share" || host == "chat" || path == "/chat" {
             // 优先检查剪贴板中的原生分享包 (秒级无损跨进程传递)
             if let pasteboardData = UIPasteboard.general.data(forPasteboardType: "com.complicated.agentrelay.share"),
-               let jsonString = String(data: pasteboardData, encoding: .utf8) {
-                UIPasteboard.general.setValue(nil, forPasteboardType: "com.complicated.agentrelay.share")
+               let jsonString = String(data: pasteboardData, encoding: .utf8), !jsonString.isEmpty {
+                UIPasteboard.general.setData(Data(), forPasteboardType: "com.complicated.agentrelay.share")
                 dispatchNativeShare(jsonString: jsonString)
                 return
             }
