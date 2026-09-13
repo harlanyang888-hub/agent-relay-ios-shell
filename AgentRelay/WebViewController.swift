@@ -36,6 +36,9 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         webView.isOpaque = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = true
+
+        // 1. 开启 iOS 原生边缘侧滑返回手势 (解决左滑返回失效)
+        webView.allowsBackForwardNavigationGestures = true
         
         view.addSubview(webView)
 
@@ -73,5 +76,23 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         activityIndicator.stopAnimating()
+    }
+
+    // 2. 支持微信支付 (weixin://)、支付宝 (alipays://) 等自定义 URL Scheme 外部唤起
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+
+        let scheme = url.scheme?.lowercased() ?? ""
+        if scheme != "http" && scheme != "https" && scheme != "about" {
+            if UIApplication.shared.canOpenURL(url) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                decisionHandler(.cancel)
+                return
+            }
+        }
+        decisionHandler(.allow)
     }
 }
