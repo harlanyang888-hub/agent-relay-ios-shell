@@ -345,7 +345,10 @@ class ShareViewController: UIViewController {
             textContent = shareData.urls.joined(separator: "\n")
         }
 
+        let shareId = UUID().uuidString
         let payload: [String: Any] = [
+            "shareId": shareId,
+            "timestamp": Date().timeIntervalSince1970,
             "text": textContent,
             "title": shareData.title,
             "files": filesPayload,

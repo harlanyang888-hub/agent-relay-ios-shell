@@ -149,7 +149,17 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
+    private var lastDispatchedShareJSON: String?
+    private var lastDispatchedShareTime: TimeInterval = 0
+
     private func dispatchNativeShare(jsonString: String) {
+        let now = Date().timeIntervalSince1970
+        if lastDispatchedShareJSON == jsonString && (now - lastDispatchedShareTime) < 2.0 {
+            return
+        }
+        lastDispatchedShareJSON = jsonString
+        lastDispatchedShareTime = now
+
         let script = """
         (function() {
             try {
