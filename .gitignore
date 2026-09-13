@@ -1,0 +1,6 @@
+build/
+DerivedData/
+*.xcuserstate
+.DS_Store
+Payload/
+AgentRelay.ipa
