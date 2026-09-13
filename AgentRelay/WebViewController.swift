@@ -9,7 +9,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1.0)
+        view.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
         setupWebView()
         setupIndicator()
         loadTargetURL()
@@ -32,12 +32,14 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.backgroundColor = UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1.0)
+        webView.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
         webView.isOpaque = true
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        
+        // 关键修复：开启 automatic 让 WebKit 自动向 CSS 传递灵动岛/刘海的 safe-area-inset-top
+        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
         webView.scrollView.bounces = true
 
-        // 1. 开启 iOS 原生边缘侧滑返回手势 (解决左滑返回失效)
+        // 开启边缘侧滑手势
         webView.allowsBackForwardNavigationGestures = true
         
         view.addSubview(webView)
@@ -78,7 +80,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         activityIndicator.stopAnimating()
     }
 
-    // 2. 支持微信支付 (weixin://)、支付宝 (alipays://) 等自定义 URL Scheme 外部唤起
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
