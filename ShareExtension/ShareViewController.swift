@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 class ShareViewController: UIViewController {
 
     private let targetURLString = "https://complicated.taildbe095.ts.net:8443/api/cards/capture"
+    // 携带 Gateway 鉴权 Token
+    private let authToken = "36a019b34a706c581073c07157aeef9b64738026b920972e4d34d0a27919d548"
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -55,6 +57,8 @@ class ShareViewController: UIViewController {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 关键鉴权 Header: 让 Gateway 准确识别并放行转发至 Smart Cards
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
         let payload: [String: Any] = [
             "text": text,
@@ -66,10 +70,13 @@ class ShareViewController: UIViewController {
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] (data, response, error) in
             DispatchQueue.main.async {
-                if error == nil {
-                    self?.dismissWithFeedback(success: true, message: "已存入 Agent 知识库 ✨")
+                let httpResponse = response as? HTTPURLResponse
+                let statusCode = httpResponse?.statusCode ?? 0
+                
+                if error == nil && (statusCode == 200 || statusCode == 201) {
+                    self?.dismissWithFeedback(success: true, message: "已存入 Smart Cards ✨")
                 } else {
-                    self?.dismissWithFeedback(success: false, message: "发送失败，请检查网络")
+                    self?.dismissWithFeedback(success: false, message: "存入失败 (HTTP \(statusCode))，请检查网关")
                 }
             }
         }
@@ -79,7 +86,7 @@ class ShareViewController: UIViewController {
     private func dismissWithFeedback(success: Bool, message: String) {
         let alert = UIAlertController(title: success ? "成功" : "提示", message: message, preferredStyle: .alert)
         present(alert, animated: true) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
                 alert.dismiss(animated: true) {
                     self?.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
                 }

@@ -9,6 +9,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // 设置与应用完全一致的深色底色，消除任何可能的黑边闪烁
         view.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
         setupWebView()
         setupIndicator()
@@ -32,18 +33,20 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.backgroundColor = UIColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1.0)
-        webView.isOpaque = true
         
-        // 关键修复：开启 automatic 让 WebKit 自动向 CSS 传递灵动岛/刘海的 safe-area-inset-top
-        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+        // 核心适配：全透明穿透，完全由网页 CSS 自行处理 safe-area，彻底消除双重底部间隙与大黑边
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = true
 
-        // 开启边缘侧滑手势
+        // 开启边缘侧滑返回手势
         webView.allowsBackForwardNavigationGestures = true
         
         view.addSubview(webView)
 
+        // 铺满物理屏幕 100%
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.topAnchor),
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
