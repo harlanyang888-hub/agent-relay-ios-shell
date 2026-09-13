@@ -5,6 +5,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     private var webView: WKWebView!
     private var activityIndicator: UIActivityIndicatorView!
     private var pendingTargetURL: URL?
+    private var pendingShareJSON: String?
 
     private let targetURLString = "https://complicated.taildbe095.ts.net:8443"
 
@@ -84,6 +85,11 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         if let pending = pendingTargetURL {
             pendingTargetURL = nil
             webView.load(URLRequest(url: pending))
+            return
+        }
+        if let shareJSON = pendingShareJSON {
+            pendingShareJSON = nil
+            dispatchNativeShare(jsonString: shareJSON)
         }
     }
 
@@ -114,25 +120,54 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         let host = components.host?.lowercased() ?? ""
         let path = components.path.lowercased()
 
-        if host == "chat" || path == "/chat" || host == "ask" || path == "/ask" {
-            var destURLString: String? = nil
-            if let conversationId = components.queryItems?.first(where: { $0.name == "conversationId" || $0.name == "conversation" || $0.name == "id" })?.value, !conversationId.isEmpty {
-                destURLString = "\(targetURLString)/?conversation=\(conversationId)"
-            } else if let text = components.queryItems?.first(where: { $0.name == "text" || $0.name == "prompt" || $0.name == "q" })?.value, !text.isEmpty {
-                let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                destURLString = "\(targetURLString)/?prompt=\(encoded)"
+        if host == "share" || path == "/share" || host == "chat" || path == "/chat" {
+            // 优先检查剪贴板中的原生分享包 (秒级无损跨进程传递)
+            if let pasteboardData = UIPasteboard.general.data(forPasteboardType: "com.complicated.agentrelay.share"),
+               let jsonString = String(data: pasteboardData, encoding: .utf8) {
+                UIPasteboard.general.setValue(nil, forPasteboardType: "com.complicated.agentrelay.share")
+                dispatchNativeShare(jsonString: jsonString)
+                return
             }
 
-            if let dest = destURLString, let destURL = URL(string: dest) {
-                if webView == nil {
-                    pendingTargetURL = destURL
-                } else {
-                    let targetPath = "/?\(destURL.query ?? "")"
-                    let js = "window.location.href = '\(targetPath)';"
-                    webView.evaluateJavaScript(js) { [weak self] (_, error) in
-                        if error != nil {
+            if let conversationId = components.queryItems?.first(where: { $0.name == "conversationId" || $0.name == "conversation" || $0.name == "id" })?.value, !conversationId.isEmpty {
+                let targetPath = "/?conversation=\(conversationId)"
+                let js = "window.location.href = '\(targetPath)';"
+                webView.evaluateJavaScript(js) { [weak self] (_, error) in
+                    if error != nil {
+                        if let destURL = URL(string: "\(self?.targetURLString ?? "")\(targetPath)") {
                             self?.webView.load(URLRequest(url: destURL))
                         }
+                    }
+                }
+            } else if let text = components.queryItems?.first(where: { $0.name == "text" || $0.name == "prompt" || $0.name == "q" })?.value, !text.isEmpty {
+                let payload: [String: Any] = ["text": text]
+                if let data = try? JSONSerialization.data(withJSONObject: payload),
+                   let jsonString = String(data: data, encoding: .utf8) {
+                    dispatchNativeShare(jsonString: jsonString)
+                }
+            }
+        }
+    }
+
+    private func dispatchNativeShare(jsonString: String) {
+        let script = """
+        (function() {
+            try {
+                const detail = \(jsonString);
+                window.dispatchEvent(new CustomEvent('agent-relay:native-share', { detail: detail }));
+            } catch(e) {
+                console.error("Native share dispatch error:", e);
+            }
+        })();
+        """
+
+        if webView == nil || activityIndicator.isAnimating {
+            pendingShareJSON = jsonString
+        } else {
+            webView.evaluateJavaScript(script) { [weak self] (_, error) in
+                if error != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self?.webView.evaluateJavaScript(script, completionHandler: nil)
                     }
                 }
             }
