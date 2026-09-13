@@ -100,4 +100,21 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         }
         decisionHandler(.allow)
     }
+
+    func handleIncomingURL(_ url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+
+        let host = components.host?.lowercased() ?? ""
+        let path = components.path.lowercased()
+
+        if host == "chat" || path == "/chat" || host == "ask" || path == "/ask" {
+            let text = components.queryItems?.first(where: { $0.name == "text" || $0.name == "prompt" || $0.name == "q" })?.value ?? ""
+            if !text.isEmpty {
+                if let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                   let targetURL = URL(string: "\(targetURLString)?prompt=\(encoded)") {
+                    webView.load(URLRequest(url: targetURL))
+                }
+            }
+        }
+    }
 }
