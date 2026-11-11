@@ -41,6 +41,8 @@
 	<string>需要访问相册以上传图片给 AI 进行分析</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>需要访问蓝牙以监听智能穿戴耳机的实体按键事件与音频路由状态</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>需要使用语音识别将您的耳机语音指令快速转为文字进行 AI 处理</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>
