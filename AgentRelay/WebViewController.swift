@@ -68,6 +68,9 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 },
                 beep: function(type) {
                     window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wearableBridge && window.webkit.messageHandlers.wearableBridge.postMessage({ action: 'beep', type: type });
+                },
+                syncContext: function(data) {
+                    window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wearableBridge && window.webkit.messageHandlers.wearableBridge.postMessage(Object.assign({ action: 'syncContext' }, data || {}));
                 }
             };
         })();
@@ -134,7 +137,8 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             dispatchNativeShare(jsonString: shareJSON)
         }
 
-        // 页面加载完成后同步当前耳机设备状态
+        // 页面加载完成后同步 Cookie 与设备状态
+        syncCookiesToWearable()
         WearableService.shared.notifyStatusChanged()
     }
 
@@ -191,8 +195,27 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             } else {
                 WearableService.shared.playBeepStart()
             }
+        case "syncContext":
+            if let convId = body["conversationId"] as? String, !convId.isEmpty {
+                WearableService.shared.currentConversationId = convId
+                print("[WebViewController] 同步当前会话 ID: \(convId)")
+            }
+            if let cookie = body["cookie"] as? String, !cookie.isEmpty {
+                WearableService.shared.authCookie = cookie
+            }
+            syncCookiesToWearable()
         default:
             print("[WebViewController] 未知 Bridge 指令: \(action)")
+        }
+    }
+
+    private func syncCookiesToWearable() {
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            let cookieHeaders = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+            if !cookieHeaders.isEmpty {
+                WearableService.shared.authCookie = cookieHeaders
+                print("[WebViewController] 成功同步 WKWebView Cookies (\(cookies.count) 条)")
+            }
         }
     }
 

@@ -3,7 +3,6 @@ import UIKit
 import AVFoundation
 import MediaPlayer
 import AudioToolbox
-import Speech
 
 public protocol WearableServiceDelegate: AnyObject {
     func wearableServiceDidChangeDeviceStatus(connected: Bool, deviceName: String, isListening: Bool, isRecording: Bool)
@@ -13,12 +12,17 @@ public protocol WearableServiceDelegate: AnyObject {
 }
 
 /// 智能穿戴耳机后台中枢服务
-/// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、本地语音识别以及声学/触觉反馈
+/// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、原生直接发往网关以及自动回播打断
 public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
 
     public static let shared = WearableService()
 
     public weak var delegate: WearableServiceDelegate?
+
+    // 网关连接与鉴权（原生直连，零依赖 WebKit JS）
+    public var gatewayBaseURL = "https://complicated.taildbe095.ts.net:8443"
+    public var authCookie: String?
+    public var currentConversationId: String?
 
     // 状态标志
     public private(set) var isListening = false
@@ -36,20 +40,21 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var recordingStartTime: Date?
     private var tempAudioFileURL: URL?
 
+    // 后台轮询任务与看门狗
+    private var replyPollingTask: URLSessionDataTask?
+    private var pollTimer: Timer?
+    private var keepaliveWatchdogTimer: Timer?
+
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
 
     // 触觉反馈
     private let feedbackGenerator = UIImpactFeedbackGenerator(style: .heavy)
 
-    // 本地语音识别
-    private var speechRecognizer: SFSpeechRecognizer?
-
     private override init() {
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
-        setupSpeechRecognizer()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -59,38 +64,25 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        // 监听音频打断通知（系统电话打入或恢复）
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
     }
 
-    // MARK: - 语音识别初始化
-    private func setupSpeechRecognizer() {
-        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-        if speechRecognizer == nil {
-            speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-        }
-
-        SFSpeechRecognizer.requestAuthorization { authStatus in
-            print("[WearableService] SFSpeechRecognizer 授权状态: \(authStatus.rawValue)")
-        }
-    }
-
-    // MARK: - 音频会话设置
-    private func setupAudioSession(forRecording: Bool) {
+    // MARK: - 音频会话常驻设置（永远保持 playAndRecord + mixWithOthers，绝不降级切换）
+    private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            if forRecording {
-                // 录音模式下必须包含 mixWithOthers，确保静音保活播放器持续运行不被打断
-                try session.setCategory(
-                    .playAndRecord,
-                    mode: .default,
-                    options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
-                )
-            } else {
-                try session.setCategory(
-                    .playback,
-                    mode: .default,
-                    options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
-                )
-            }
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+            )
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("[WearableService] 音频会话配置失败: \(error)")
@@ -102,6 +94,30 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             guard let self = self else { return }
             self.updateAudioRouteInfo()
             self.notifyStatusChanged()
+            // 路由变更后保证静音保活持续
+            if self.isListening || self.isRecording {
+                self.ensureSilentPlayerRunning()
+            }
+        }
+    }
+
+    @objc private func handleAudioInterruption(notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        if type == .ended {
+            if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    setupAudioSession()
+                    if isListening || isRecording {
+                        ensureSilentPlayerRunning()
+                    }
+                }
+            }
         }
     }
 
@@ -135,30 +151,51 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 保持静音底噪播放 (后台保活与按键捕获生命线)
+    // MARK: - 保持静音底噪播放 (后台保活与实体按键捕获的生命线)
     private func ensureSilentPlayerRunning() {
         if silentPlayer == nil || !(silentPlayer?.isPlaying ?? false) {
             do {
                 let silentData = generateSilentWAV()
                 silentPlayer = try AVAudioPlayer(data: silentData)
+                silentPlayer?.delegate = self
                 silentPlayer?.numberOfLoops = -1
                 silentPlayer?.volume = 0.01
                 silentPlayer?.prepareToPlay()
-                silentPlayer?.play()
+                let ok = silentPlayer?.play() ?? false
+                print("[WearableService] 静音保活播放器启动: \(ok)")
             } catch {
                 print("[WearableService] 静音保活播放器启动失败: \(error)")
             }
         }
     }
 
+    private func startKeepaliveWatchdog() {
+        keepaliveWatchdogTimer?.invalidate()
+        keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if (self.isListening || self.isRecording) && !self.isPlayingAudio {
+                if self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false) {
+                    print("[WearableService] 看门狗：静音底噪暂停，强制拉起")
+                    self.ensureSilentPlayerRunning()
+                }
+            }
+        }
+    }
+
+    private func stopKeepaliveWatchdog() {
+        keepaliveWatchdogTimer?.invalidate()
+        keepaliveWatchdogTimer = nil
+    }
+
     // MARK: - 监听启动与停止
     public func startListening() {
         guard !isListening else { return }
-        setupAudioSession(forRecording: false)
+        setupAudioSession()
         ensureSilentPlayerRunning()
+        startKeepaliveWatchdog()
 
         registerRemoteCommands()
-        updateNowPlayingInfo(statusText: "🟢 耳机按键待命 (单击按键录音)")
+        updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
 
         isListening = true
         notifyStatusChanged()
@@ -172,6 +209,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             stopRecording(shouldProcess: false)
         }
         stopAudioPlayback()
+        stopPolling()
+        stopKeepaliveWatchdog()
 
         silentPlayer?.stop()
         silentPlayer = nil
@@ -208,14 +247,21 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return .success
         }
 
-        // 4. 耳机双击（下一首）
+        // 4. 停止按键
+        commandCenter.stopCommand.isEnabled = true
+        commandCenter.stopCommand.addTarget { [weak self] _ in
+            self?.handleHardwareButtonPress(name: "stop")
+            return .success
+        }
+
+        // 5. 耳机双击（下一首）
         commandCenter.nextTrackCommand.isEnabled = true
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
             self?.handleHardwareButtonPress(name: "nextTrack")
             return .success
         }
 
-        // 5. 耳机三击（上一首）
+        // 6. 耳机三击（上一首）
         commandCenter.previousTrackCommand.isEnabled = true
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
             self?.handleHardwareButtonPress(name: "previousTrack")
@@ -230,6 +276,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         commandCenter.togglePlayPauseCommand.removeTarget(nil)
         commandCenter.playCommand.removeTarget(nil)
         commandCenter.pauseCommand.removeTarget(nil)
+        commandCenter.stopCommand.removeTarget(nil)
         commandCenter.nextTrackCommand.removeTarget(nil)
         commandCenter.previousTrackCommand.removeTarget(nil)
         UIApplication.shared.endReceivingRemoteControlEvents()
@@ -248,12 +295,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         infoCenter.playbackState = .playing
     }
 
-    // MARK: - 实体按键交互流转 (录音、结束、打断)
+    // MARK: - 实体按键核心流转：按一下开始录音，再按一下立刻发出音频
     public func handleHardwareButtonPress(name: String) {
         let now = Date().timeIntervalSince1970
-        // 防抖：300ms 内忽略重复的硬件按键触发
-        if (now - lastButtonTime) < 0.3 {
-            print("[WearableService] 忽略防抖按键: \(name)")
+        // 防抖：200ms 内忽略硬件连击抖动
+        if (now - lastButtonTime) < 0.20 {
+            print("[WearableService] 忽略防抖连击: \(name)")
             return
         }
         lastButtonTime = now
@@ -263,7 +310,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            print("[WearableService] 捕获按键: \(name), 当前状态: isRecording=\(self.isRecording), isPlaying=\(self.isPlayingAudio)")
+            print("[WearableService] 捕获按键: \(name), isRecording=\(self.isRecording), isPlaying=\(self.isPlayingAudio)")
             self.delegate?.wearableServiceDidCaptureButton(name: name, appState: stateStr)
 
             // 1. 如果正在播报 AI 语音 -> 瞬间打断 (Barge-in)
@@ -274,24 +321,19 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 return
             }
 
-            // 2. 如果正在录音 -> 停止录音并提交
+            // 2. 如果正在录音中 -> 再次按键：立即停止录音并发送给 Agent！
             if self.isRecording {
-                // 录音时长保护：若录制不足 0.4 秒，防止误触连击
-                if let start = self.recordingStartTime, Date().timeIntervalSince(start) < 0.4 {
-                    print("[WearableService] 录音时间过短，忽略误触")
-                    return
-                }
                 self.stopRecording(shouldProcess: true)
                 return
             }
 
-            // 3. 如果在待命监听中 -> 开启录音
+            // 3. 如果在待命监听中 -> 首次按键：开启录音
             if self.isListening {
                 self.startRecording()
                 return
             }
 
-            // 兜底触发触觉反馈
+            // 兜底触感
             self.triggerFeedbackHaptic()
         }
     }
@@ -300,22 +342,20 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public func startRecording() {
         guard !isRecording else { return }
 
-        // 停止之前的播放
+        // 停止之前的播放与旧的轮询
         stopAudioPlayback()
+        stopPolling()
 
         // 触感反馈 + 清脆高音提示音
         triggerFeedbackHaptic()
         playBeepStart()
 
-        setupAudioSession(forRecording: true)
-        // 关键点：录音期间保持静音底噪播放，保证系统锁屏按键 100% 持续命中本 App
-        ensureSilentPlayerRunning()
-
         let tempDir = NSTemporaryDirectory()
-        let fileName = "wearable_\(Int(Date().timeIntervalSince1970)).m4a"
+        let fileName = "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a"
         let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent(fileName)
         self.tempAudioFileURL = fileURL
 
+        // 标准 AAC 录音配置
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 16000.0,
@@ -332,7 +372,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             self.isRecording = true
             self.recordingStartTime = Date()
 
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束)")
+            // 关键生命线：在录音启动后，确保静音底噪播放持续，保证系统锁屏按键 100% 持续命中本 App
+            ensureSilentPlayerRunning()
+
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path)")
         } catch {
@@ -353,97 +396,238 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         notifyStatusChanged()
 
         let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
-        updateNowPlayingInfo(statusText: "🟡 正在识别与思考...")
+        updateNowPlayingInfo(statusText: "🟡 正在发送给 Agent...")
 
-        // 恢复保活模式
-        setupAudioSession(forRecording: false)
+        // 恢复保活静音底噪
         ensureSilentPlayerRunning()
 
         guard shouldProcess, let fileURL = tempAudioFileURL, FileManager.default.fileExists(atPath: fileURL.path) else {
             return
         }
 
-        // 读取音频文件为 Base64
+        // 读取音频文件
         guard let audioData = try? Data(contentsOf: fileURL), !audioData.isEmpty else {
             print("[WearableService] 录音数据为空，跳过提交")
             return
         }
         let base64String = audioData.base64EncodedString()
-        print("[WearableService] 录音读取成功, 大小: \(audioData.count) bytes, 时长: \(String(format: "%.1f", duration))s")
+        print("[WearableService] 录音完成: \(audioData.count) 字节, 时长: \(String(format: "%.1f", duration))s")
 
-        // 本地识别（带 1.2 秒硬超时保护，绝不阻塞音频派发）
-        recognizeSpeechWithTimeout(fileURL: fileURL, timeoutSeconds: 1.2) { [weak self] transcript in
-            guard let self = self else { return }
-            print("[WearableService] 最终提交转写: '\(transcript)'")
+        // 核心突破点：原生 Swift 直接通过 URLSession 后台上传给网关，绝对不受 WebKit 挂起影响！
+        self.sendAudioToGatewayNative(audioBase64: base64String, duration: duration)
 
-            DispatchQueue.main.async {
-                self.delegate?.wearableServiceDidFinishRecording(
-                    base64: base64String,
-                    mimeType: "audio/m4a",
-                    transcript: transcript,
-                    duration: duration
-                )
-            }
-
-            // 延迟清理临时文件
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
+        // 同时派发给 Web 前台（如果在前台可以同步显示）
+        DispatchQueue.main.async { [weak self] in
+            self?.delegate?.wearableServiceDidFinishRecording(
+                base64: base64String,
+                mimeType: "audio/m4a",
+                transcript: "【耳机语音指令】",
+                duration: duration
+            )
         }
     }
 
-    // MARK: - 本地语音转文字 (带安全硬超时与一次性回调保护)
-    private func recognizeSpeechWithTimeout(fileURL: URL, timeoutSeconds: Double, completion: @escaping (String) -> Void) {
-        guard let recognizer = speechRecognizer, recognizer.isAvailable else {
-            print("[WearableService] SFSpeechRecognizer 不可用，直接返回空文本")
-            completion("")
+    // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
+    private func sendAudioToGatewayNative(audioBase64: String, duration: TimeInterval) {
+        guard let url = URL(string: "\(gatewayBaseURL)/api/shortcuts/voice") else {
+            print("[WearableService] 无效的网关 URL: \(gatewayBaseURL)")
             return
         }
 
-        var hasHandled = false
-        var latestText = ""
-        var recognitionTask: SFSpeechRecognitionTask?
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(gatewayBaseURL, forHTTPHeaderField: "Origin")
+        request.setValue("AgentRelay-Wearable/1.0 (iOS Native)", forHTTPHeaderField: "User-Agent")
 
-        let finishOnce: (String) -> Void = { text in
-            if !hasHandled {
-                hasHandled = true
-                recognitionTask?.cancel()
-                recognitionTask = nil
-                completion(text)
-            }
+        // 注入当前登录 Cookie
+        if let cookie = authCookie, !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
 
-        // 超时定时器：超时立即放行
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) {
-            finishOnce(latestText)
+        var payload: [String: Any] = [
+            "audioBase64": audioBase64,
+            "filename": "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a",
+            "mimeType": "audio/m4a",
+            "prompt": "【耳机语音指令】"
+        ]
+        if let convId = currentConversationId, !convId.isEmpty {
+            payload["conversationId"] = convId
         }
 
-        let request = SFSpeechURLRecognitionRequest(url: fileURL)
-        request.shouldReportPartialResults = true
-        if #available(iOS 13.0, *) {
-            request.requiresOnDeviceRecognition = false
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
+            print("[WearableService] 无法序列化语音上传请求体")
+            return
         }
+        request.httpBody = bodyData
 
-        recognitionTask = recognizer.recognitionTask(with: request) { result, error in
-            if let result = result {
-                let current = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !current.isEmpty {
-                    latestText = current
+        print("[WearableService] 原生后台发送语音到: \(url.absoluteString)...")
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                print("[WearableService] 语音上传网络失败: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.updateNowPlayingInfo(statusText: "❌ 发送失败，请检查网络")
                 }
-                if result.isFinal {
-                    finishOnce(latestText)
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode), let data = data else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                print("[WearableService] 语音上传 HTTP 错误: \(code)")
+                DispatchQueue.main.async {
+                    self.updateNowPlayingInfo(statusText: "❌ 服务器返回 \(code)")
+                }
+                return
+            }
+
+            print("[WearableService] 语音已成功送达网关！")
+            // 播放轻快上升音：提示已发送成功
+            self.playBeepStart()
+
+            // 解析返回的 conversationId
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let convId = json["conversationId"] as? String {
+                self.currentConversationId = convId
+                DispatchQueue.main.async {
+                    self.updateNowPlayingInfo(statusText: "🟡 已发送，Agent 正在思考...")
+                    // 启动后台轮询等待 Agent 回复，回复完成后自动朗读到耳机
+                    self.startPollingAgentReply(conversationId: convId)
                 }
             }
-            if error != nil {
-                finishOnce(latestText)
+        }
+        task.resume()
+    }
+
+    // MARK: - 后台轮询 Agent 回复并自动推送到耳机朗读
+    private func startPollingAgentReply(conversationId: String) {
+        stopPolling()
+        var pollCount = 0
+        let maxPolls = 40 // 最多等待约 60 秒
+
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
             }
+            pollCount += 1
+            if pollCount > maxPolls {
+                timer.invalidate()
+                print("[WearableService] 等待 Agent 回复超时")
+                self.updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
+                return
+            }
+
+            guard let url = URL(string: "\(self.gatewayBaseURL)/api/conversations/\(conversationId)/messages") else {
+                return
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            if let cookie = self.authCookie {
+                request.setValue(cookie, forHTTPHeaderField: "Cookie")
+            }
+
+            self.replyPollingTask = URLSession.shared.dataTask(with: request) { data, response, error in
+                guard let data = data, error == nil,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let messages = json["messages"] as? [[String: Any]] else {
+                    return
+                }
+
+                // 寻找最新的助手回复
+                if let lastAssistant = messages.last(where: { ($0["role"] as? String) == "agent" || ($0["role"] as? String) == "assistant" }),
+                   let content = lastAssistant["content"] as? String, !content.isEmpty {
+                    let isStreaming = (lastAssistant["streaming"] as? Bool) ?? false
+                    if !isStreaming {
+                        // 发现已完成的回复！停止轮询并立即请求合成语音
+                        DispatchQueue.main.async {
+                            timer.invalidate()
+                            self.fetchTTSAndPlay(text: content)
+                        }
+                    }
+                }
+            }
+            self.replyPollingTask?.resume()
         }
     }
 
-    // MARK: - AI 语音播报推送到耳机
-    public func playAudioStream(urlString: String?, base64Data: String?) {
+    private func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+        replyPollingTask?.cancel()
+        replyPollingTask = nil
+    }
+
+    // MARK: - 请求 Edge-TTS 并播报到蓝牙耳机
+    private func fetchTTSAndPlay(text: String) {
+        guard let url = URL(string: "\(gatewayBaseURL)/api/tts") else { return }
+
+        // 清洗文本中的 markdown 格式
+        let cleanText = cleanMarkdownForSpeech(text: text)
+        guard !cleanText.isEmpty else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(gatewayBaseURL, forHTTPHeaderField: "Origin")
+        if let cookie = authCookie {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+
+        let payload: [String: Any] = [
+            "text": cleanText,
+            "voice": "zh-CN-XiaoxiaoNeural"
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        updateNowPlayingInfo(statusText: "🔊 正在合成语音并推送到耳机...")
+        print("[WearableService] 正在请求 Edge-TTS: \(cleanText.prefix(20))...")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self, let data = data, error == nil,
+                  let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                print("[WearableService] TTS 合成失败")
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.playAudioStreamData(data: data)
+            }
+        }.resume()
+    }
+
+    private func cleanMarkdownForSpeech(text: String) -> String {
+        var clean = text
+        clean = clean.replacingOccurrences(of: "```[\\w-]*\\n[\\s\\S]*?```", with: "，代码块已省略，", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "`[^`]+`", with: "", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "!\\[[^\\]]*\\]\\([^)]+\\)", with: "", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "\\[([^\\]]+)\\]\\([^)]+\\)", with: "$1", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "^#{1,6}\\s+", with: "", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        clean = clean.replacingOccurrences(of: "[\\*\\_\\~]", with: "", options: .regularExpression)
+        return clean.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - 语音流播放
+    private func playAudioStreamData(data: Data) {
         stopAudioPlayback()
 
+        do {
+            speechPlayer = try AVAudioPlayer(data: data)
+            speechPlayer?.delegate = self
+            speechPlayer?.prepareToPlay()
+            speechPlayer?.play()
+            isPlayingAudio = true
+            updateNowPlayingInfo(statusText: "🔊 正在播报 AI 回复 (按键可打断)")
+            print("[WearableService] 正在向蓝牙耳机播报语音")
+        } catch {
+            print("[WearableService] 播放语音失败: \(error)")
+            isPlayingAudio = false
+        }
+    }
+
+    public func playAudioStream(urlString: String?, base64Data: String?) {
         var audioData: Data?
         if let base64 = base64Data, !base64.isEmpty {
             var clean = base64
@@ -454,24 +638,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         } else if let urlStr = urlString, let url = URL(string: urlStr) {
             audioData = try? Data(contentsOf: url)
         }
-
-        guard let data = audioData, !data.isEmpty else {
-            print("[WearableService] 播放数据为空")
-            return
-        }
-
-        do {
-            setupAudioSession(forRecording: false)
-            speechPlayer = try AVAudioPlayer(data: data)
-            speechPlayer?.delegate = self
-            speechPlayer?.prepareToPlay()
-            speechPlayer?.play()
-            isPlayingAudio = true
-            updateNowPlayingInfo(statusText: "🔊 正在播报 AI 回复 (按键可打断)")
-            print("[WearableService] 已开始播报语音流")
-        } catch {
-            print("[WearableService] 播放语音失败: \(error)")
-            isPlayingAudio = false
+        if let data = audioData {
+            playAudioStreamData(data: data)
         }
     }
 
@@ -480,19 +648,23 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             speechPlayer?.stop()
             speechPlayer = nil
             isPlayingAudio = false
-            updateNowPlayingInfo(statusText: "🟢 耳机按键待命 (单击按键录音)")
+            updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             delegate?.wearableServiceDidFinishPlayback()
             print("[WearableService] 语音播报已停止")
         }
     }
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        if player == speechPlayer {
+        if player == silentPlayer {
+            if isListening || isRecording {
+                silentPlayer?.play()
+            }
+        } else if player == speechPlayer {
             isPlayingAudio = false
             speechPlayer = nil
-            updateNowPlayingInfo(statusText: "🟢 耳机按键待命 (单击按键录音)")
+            updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             delegate?.wearableServiceDidFinishPlayback()
-            print("[WearableService] 语音播报播放完毕")
+            print("[WearableService] 语音播报完毕")
         }
     }
 
@@ -505,13 +677,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public func playBeepStart() {
         beepStartPlayer?.currentTime = 0
         beepStartPlayer?.play()
-        AudioServicesPlaySystemSound(1057) // 经典轻促提示音
+        AudioServicesPlaySystemSound(1057)
     }
 
     public func playBeepEnd() {
         beepEndPlayer?.currentTime = 0
         beepEndPlayer?.play()
-        AudioServicesPlaySystemSound(1054) // 确认完成音
+        AudioServicesPlaySystemSound(1054)
     }
 
     private func setupBeepPlayers() {
