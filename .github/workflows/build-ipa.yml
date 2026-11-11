@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout Code
