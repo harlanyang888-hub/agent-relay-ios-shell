@@ -11,6 +11,7 @@
 		11000002 /* WebViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000002 /* WebViewController.swift */; };
 		11000003 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000004 /* ShareViewController.swift */; };
 		11000004 /* ShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 01000002 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		11000005 /* WearablePoCViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000006 /* WearablePoCViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +46,7 @@
 		21000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		21000004 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		21000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		21000006 /* WearablePoCViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WearablePoCViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +81,7 @@
 			children = (
 				21000001 /* AppDelegate.swift */,
 				21000002 /* WebViewController.swift */,
+				21000006 /* WearablePoCViewController.swift */,
 				21000003 /* Info.plist */,
 			);
 			path = AgentRelay;
@@ -202,6 +205,7 @@
 			files = (
 				11000001 /* AppDelegate.swift in Sources */,
 				11000002 /* WebViewController.swift in Sources */,
+				11000005 /* WearablePoCViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
