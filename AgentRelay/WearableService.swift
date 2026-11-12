@@ -3,7 +3,6 @@ import UIKit
 import AVFoundation
 import MediaPlayer
 import AudioToolbox
-import CallKit
 
 public protocol WearableServiceDelegate: AnyObject {
     func wearableServiceDidChangeDeviceStatus(connected: Bool, deviceName: String, isListening: Bool, isRecording: Bool)
@@ -14,7 +13,7 @@ public protocol WearableServiceDelegate: AnyObject {
 
 /// 智能穿戴耳机后台中枢服务
 /// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、原生直接发往网关以及自动回播打断
-public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate, CXProviderDelegate {
+public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
 
     public static let shared = WearableService()
 
@@ -46,9 +45,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
 
-    // CallKit 硬件通话按键捕获（专用于 HFP 模式下捕获蓝牙耳机实体按键）
-    private var callProvider: CXProvider?
-    private var currentCallUUID: UUID?
+    // 音量与视频录制物理按键监听 (支持相机快门/视频录制键)
+    private var volumeObserver: NSKeyValueObservation?
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -60,7 +58,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
-        setupCallKit()
+        setupVolumeObserver()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -97,7 +95,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             if forRecording {
                 try session.setCategory(
                     .playAndRecord,
-                    mode: .spokenAudio,
+                    mode: .default,
                     options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
                 )
             } else {
@@ -357,8 +355,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // MARK: - 实体按键核心流转：按一下开始录音，再按一下立刻发出音频
     public func handleHardwareButtonPress(name: String) {
         let now = Date().timeIntervalSince1970
-        // 防抖：200ms 内忽略硬件连击抖动
-        if (now - lastButtonTime) < 0.20 {
+        // 防抖：400ms 内忽略硬件连击抖动
+        if (now - lastButtonTime) < 0.40 {
             print("[WearableService] 忽略防抖连击: \(name)")
             return
         }
@@ -382,11 +380,17 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
             // 2. 如果正在录音中 -> 再次按键：立即停止录音并发送给 Agent！
             if self.isRecording {
+                let duration = Date().timeIntervalSince(self.recordingStartTime ?? Date())
+                // 核心防抖安全锁：录音启动 0.8 秒内绝对禁止立刻停止，杜绝按键物理弹跳/蓝牙双包导致瞬间一闪而过！
+                if duration < 0.8 {
+                    print("[WearableService] 录音启动仅 \(String(format: "%.2f", duration))s，忽略连击抖动")
+                    return
+                }
                 self.stopRecording(shouldProcess: true)
                 return
             }
 
-            // 3. 首次按键：开启录音（无论当前是否已被 Web 显式标记，只要捕获到按键，100% 响应并启动录音）
+            // 3. 首次按键：开启录音
             if !self.isListening {
                 self.startListening()
             }
@@ -406,7 +410,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         triggerFeedbackHaptic()
         playBeepStart()
 
-        // 关键切入：开启麦克风录音会话模式
+        // 开启麦克风录音会话模式
         setupAudioSession(forRecording: true)
 
         let tempDir = NSTemporaryDirectory()
@@ -435,12 +439,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            // 启动 CallKit 会话，确保 HFP 通话模式下耳机的物理按键（挂断信号）能被系统 100% 捕获
-            let callUUID = UUID()
-            self.currentCallUUID = callUUID
-            self.callProvider?.reportOutgoingCall(with: callUUID, connectedAt: Date())
-
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击耳机按键停止并发送)")
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
         } catch {
@@ -451,12 +450,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
-
-        // 结束 CallKit 通话
-        if let callUUID = currentCallUUID {
-            currentCallUUID = nil
-            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
-        }
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -500,33 +493,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - CallKit 初始化与代理回调 (用于 HFP 模式下完美捕获蓝牙耳机实体按键)
-    private func setupCallKit() {
-        let configuration = CXProviderConfiguration()
-        configuration.supportsVideo = false
-        configuration.maximumCallGroups = 1
-        configuration.maximumCallsPerCallGroup = 1
-        configuration.supportedHandleTypes = [.generic]
-        configuration.includesCallsInRecents = false
-
-        callProvider = CXProvider(configuration: configuration)
-        callProvider?.setDelegate(self, queue: DispatchQueue.main)
-    }
-
-    public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        print("[WearableService] 捕获到耳机硬件挂断键 (CXEndCallAction) -> 立即停止录音并发送！")
-        if self.isRecording {
-            self.stopRecording(shouldProcess: true)
+    // MARK: - 音量/视频录制快门物理按键监听 (支持大疆与蓝牙遥控快门键)
+    private func setupVolumeObserver() {
+        volumeObserver = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.old, .new]) { [weak self] _, change in
+            guard let self = self else { return }
+            guard let oldVal = change.oldValue, let newVal = change.newValue, abs(oldVal - newVal) > 0.001 else { return }
+            print("[WearableService] 捕获到音量/视频快门按键变更: \(oldVal) -> \(newVal)")
+            self.handleHardwareButtonPress(name: "videoOrVolumeShutter")
         }
-        action.fulfill()
-        self.currentCallUUID = nil
-    }
-
-    public func providerDidReset(_ provider: CXProvider) {
-        if self.isRecording {
-            self.stopRecording(shouldProcess: true)
-        }
-        self.currentCallUUID = nil
     }
 
     // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
