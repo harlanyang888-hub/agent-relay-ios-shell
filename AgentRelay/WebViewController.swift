@@ -25,9 +25,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if !WearableService.shared.isListening {
-            WearableService.shared.startListening()
-        }
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {

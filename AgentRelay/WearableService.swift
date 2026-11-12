@@ -66,9 +66,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
 
-    // 音量与视频录制物理按键监听 (支持相机快门/视频录制键)
-    private var volumeObserver: NSKeyValueObservation?
-
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
 
@@ -79,7 +76,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
-        setupVolumeObserver()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -107,24 +103,29 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 音频会话设置（基于 .mixWithOthers 的无缝混音与零抢占架构）
-    // 1. 统一采用 .playAndRecord + .mixWithOthers：
-    //    允许与微信语音、网易云音乐、播客等其他 App 完美混音共存，绝不打断或抢占其他 App 的播放！
-    // 2. 待机状态下仅运行微弱静音保活，完全不开启麦克风硬件采集（0 麦克风占用）；
-    // 3. 收到按键指令时瞬间启动录音，无需重新握手协商 Category，零延迟、无电流杂音；
-    // 4. 录音完毕立即释放麦克风资源，回到待机混音状态。
-    private func setupAudioSession(forRecording: Bool = false) {
+    // MARK: - 音频会话设置
+    // 待机状态使用 .playback 专属模式（A2DP 纯播放），这是 iOS 系统分发 MPRemoteCommandCenter 耳机实体按键的绝对必要前提！
+    // 录音状态瞬时切换至 .playAndRecord，录音结束瞬间切回 .playback。
+    private func setupAudioSession(forRecording: Bool) {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.mixWithOthers, .allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
-            )
+            if forRecording {
+                try session.setCategory(
+                    .playAndRecord,
+                    mode: .default,
+                    options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+                )
+            } else {
+                try session.setCategory(
+                    .playback,
+                    mode: .default,
+                    options: [.allowBluetoothA2DP]
+                )
+            }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            print("[WearableService] 音频会话成功激活 (.playAndRecord + .mixWithOthers, forRecording=\(forRecording))")
+            print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording))")
         } catch {
-            print("[WearableService] 音频会话配置失败: \(error)")
+            print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
         }
     }
 
@@ -233,11 +234,17 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private func startKeepaliveWatchdog() {
         keepaliveWatchdogTimer?.invalidate()
         keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            guard let self = self, self.isListening else { return }
-            // 只要处于监听状态且不在播放 AI 朗读，若底噪未在运行，自动激活会话并夺回按键焦点
-            if !self.isPlayingAudio && (self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false)) {
-                print("[WearableService] 看门狗：检测到底噪停顿，自动重新激活会话并拉起保活")
-                self.setupAudioSession(forRecording: self.isRecording)
+            guard let self = self, self.isListening, !self.isRecording, !self.isPlayingAudio else { return }
+
+            // 如果其他 App (如音乐、微信语音) 正在发声，礼貌等待，不强行打扰
+            if AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                return
+            }
+
+            // 当其他音频停止发声，且保活播放器未在运行，自动激活会话并夺回耳机待命控制权
+            if self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false) {
+                print("[WearableService] 看门狗：其他音频已停止，自动重新激活会话并拉起待命保活")
+                self.setupAudioSession(forRecording: false)
                 self.registerRemoteCommands()
                 self.updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
                 self.ensureSilentPlayerRunning()
@@ -262,11 +269,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
         isListening = true
         notifyStatusChanged()
-        print("[WearableService] 穿戴按键后台监听已启动 (已置为 .playAndRecord + .mixWithOthers)")
+        print("[WearableService] 穿戴按键后台监听已启动 (已置为 .playback A2DP)")
     }
 
     public func stopListening() {
         guard isListening else { return }
+        isListening = false
 
         if isRecording {
             stopRecording(shouldProcess: false)
@@ -280,9 +288,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         unregisterRemoteCommands()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
 
-        isListening = false
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("[WearableService] 注销音频会话失败: \(error)")
+        }
+
         notifyStatusChanged()
-        print("[WearableService] 穿戴按键后台监听已停止")
+        print("[WearableService] 穿戴按键后台监听已彻底停止")
     }
 
     // MARK: - 远程按键注册 (MPRemoteCommandCenter)
@@ -368,9 +381,15 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 实体按键核心流转：按一下开始录音，再按一下立刻发出音频
     public func handleHardwareButtonPress(name: String) {
+        // 关键安全守卫：如果监听未开启，100% 忽略按键，绝不自动重启监听或发送消息
+        guard isListening else {
+            print("[WearableService] 监听未开启，忽略外部按键: \(name)")
+            return
+        }
+
         let now = Date().timeIntervalSince1970
-        // 防抖：400ms 内忽略硬件连击抖动
-        if (now - lastButtonTime) < 0.40 {
+        // 防抖：350ms 内忽略硬件连击抖动
+        if (now - lastButtonTime) < 0.35 {
             print("[WearableService] 忽略防抖连击: \(name)")
             return
         }
@@ -379,7 +398,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         let stateStr = (UIApplication.shared.applicationState == .background) ? "background" : "foreground"
 
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.isListening else { return }
 
             print("[WearableService] 捕获按键: \(name), isRecording=\(self.isRecording), isPlaying=\(self.isPlayingAudio)")
             self.delegate?.wearableServiceDidCaptureButton(name: name, appState: stateStr)
@@ -405,9 +424,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             }
 
             // 3. 首次按键：开启录音
-            if !self.isListening {
-                self.startListening()
-            }
             self.startRecording()
         }
     }
@@ -507,14 +523,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - 音量/视频录制快门物理按键监听 (支持大疆与蓝牙遥控快门键)
-    private func setupVolumeObserver() {
-        volumeObserver = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.old, .new]) { _, change in
-            guard let oldVal = change.oldValue, let newVal = change.newValue, abs(oldVal - newVal) > 0.001 else { return }
-            print("[WearableService] 捕获到音量/视频快门按键变更: \(oldVal) -> \(newVal)")
-            WearableEventDispatcher.shared.dispatchButton(name: "videoOrVolumeShutter")
-        }
-    }
 
     // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
     private func sendAudioToGatewayNative(audioBase64: String, duration: TimeInterval) {
