@@ -10,6 +10,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         window = UIWindow(frame: UIScreen.main.bounds)
 
+        // 启动即刻拉起穿戴监听（.playback A2DP 模式）
+        WearableService.shared.startListening()
+
         let webVC = WebViewController()
         self.webViewController = webVC
 

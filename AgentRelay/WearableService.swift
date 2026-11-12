@@ -44,6 +44,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var replyPollingTask: URLSessionDataTask?
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
+    private var vadTimer: Timer?
+    private var maxDurationTimer: Timer?
+    private var silenceSeconds: Double = 0
+    private var hasSpoken: Bool = false
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -74,19 +78,28 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 音频会话常驻设置（保持 playAndRecord，严格禁止 mixWithOthers 避免按键丢失）
-    private func setupAudioSession() {
+    // MARK: - 音频会话设置（关键状态隔离）
+    // 待命状态必须使用 .playback（A2DP 专属），蓝牙耳机实体按键才能正常发送 AVRCP 播放/暂停控制！
+    // 录音状态切换至 .playAndRecord（开启麦克风），录音结束后立刻切回 .playback。
+    private func setupAudioSession(forRecording: Bool) {
         let session = AVAudioSession.sharedInstance()
         do {
-            // 绝不可包含 .mixWithOthers！包含 mixWithOthers 会导致 iOS 判定本 App 为非主媒体应用，直接静默屏蔽所有 MPRemoteCommandCenter 耳机硬件按键！
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
-            )
+            if forRecording {
+                try session.setCategory(
+                    .playAndRecord,
+                    mode: .spokenAudio,
+                    options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+                )
+            } else {
+                try session.setCategory(
+                    .playback,
+                    mode: .default,
+                    options: [.allowBluetooth, .allowBluetoothA2DP]
+                )
+            }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            print("[WearableService] 音频会话配置失败: \(error)")
+            print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
         }
     }
 
@@ -191,7 +204,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // MARK: - 监听启动与停止
     public func startListening() {
         guard !isListening else { return }
-        setupAudioSession()
+        setupAudioSession(forRecording: false)
         ensureSilentPlayerRunning()
         startKeepaliveWatchdog()
 
@@ -200,7 +213,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
         isListening = true
         notifyStatusChanged()
-        print("[WearableService] 穿戴按键后台监听已启动")
+        print("[WearableService] 穿戴按键后台监听已启动 (已置为 .playback A2DP)")
     }
 
     public func stopListening() {
@@ -356,6 +369,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         triggerFeedbackHaptic()
         playBeepStart()
 
+        // 关键切入：开启麦克风录音会话模式
+        setupAudioSession(forRecording: true)
+
         let tempDir = NSTemporaryDirectory()
         let fileName = "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a"
         let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent(fileName)
@@ -372,25 +388,32 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         do {
             let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
             recorder.delegate = self
+            recorder.isMeteringEnabled = true
             recorder.prepareToRecord()
-            recorder.record()
+            let recordOk = recorder.record()
             self.audioRecorder = recorder
             self.isRecording = true
             self.recordingStartTime = Date()
 
-            // 关键生命线：在录音启动后，确保静音底噪播放持续，保证系统锁屏按键 100% 持续命中本 App
+            // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键或说话停顿发送)")
             notifyStatusChanged()
-            print("[WearableService] 录音已开始: \(fileURL.path)")
+            print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
+
+            // 启动静音自动检测 (VAD)
+            startVADWatchdog()
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
+            setupAudioSession(forRecording: false)
         }
     }
 
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
+
+        stopVADWatchdog()
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -401,11 +424,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         isRecording = false
         notifyStatusChanged()
 
+        // 关键切回：录音结束后立刻切回 .playback，让蓝牙耳机回归 A2DP，保证下一次按键 100% 捕获！
+        setupAudioSession(forRecording: false)
+        ensureSilentPlayerRunning()
+
         let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
         updateNowPlayingInfo(statusText: "🟡 正在发送给 Agent...")
-
-        // 恢复保活静音底噪
-        ensureSilentPlayerRunning()
 
         guard shouldProcess, let fileURL = tempAudioFileURL, FileManager.default.fileExists(atPath: fileURL.path) else {
             return
@@ -431,6 +455,49 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 duration: duration
             )
         }
+    }
+
+    // MARK: - 智能静音检测 (VAD) 与安全看门狗
+    private func startVADWatchdog() {
+        stopVADWatchdog()
+        silenceSeconds = 0
+        hasSpoken = false
+
+        // 1. 静音检测定时器 (100ms 刷新一次电平)
+        vadTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let recorder = self.audioRecorder, self.isRecording else { return }
+            recorder.updateMeters()
+            let power = recorder.averagePower(forChannel: 0)
+
+            // power 范围约为 -160 (完全静音) 到 0 (最大音量)
+            if power > -42.0 {
+                // 用户正在说话
+                self.hasSpoken = true
+                self.silenceSeconds = 0
+            } else {
+                // 环境底噪或停顿
+                self.silenceSeconds += 0.1
+                // 如果用户已经开过口，且随后停顿超过 1.3 秒 -> 自动判定说话完毕，停止录音并发送！
+                if self.hasSpoken && self.silenceSeconds >= 1.3 {
+                    print("[WearableService] VAD: 检测到语音停顿 1.3s，自动结束并提交")
+                    self.stopRecording(shouldProcess: true)
+                }
+            }
+        }
+
+        // 2. 最长 60 秒硬超时保护
+        maxDurationTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: false) { [weak self] _ in
+            guard let self = self, self.isRecording else { return }
+            print("[WearableService] 录音达到 60 秒上限，自动结束")
+            self.stopRecording(shouldProcess: true)
+        }
+    }
+
+    private func stopVADWatchdog() {
+        vadTimer?.invalidate()
+        vadTimer = nil
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
     }
 
     // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
