@@ -3,6 +3,7 @@ import UIKit
 import AVFoundation
 import MediaPlayer
 import AudioToolbox
+import CallKit
 
 public protocol WearableServiceDelegate: AnyObject {
     func wearableServiceDidChangeDeviceStatus(connected: Bool, deviceName: String, isListening: Bool, isRecording: Bool)
@@ -34,7 +35,7 @@ public final class WearableEventDispatcher {
 
 /// 智能穿戴耳机后台中枢服务
 /// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、原生直接发往网关以及自动回播打断
-public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
+public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate, CXProviderDelegate {
 
     public static let shared = WearableService()
 
@@ -61,10 +62,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var recordingStartTime: Date?
     private var tempAudioFileURL: URL?
 
+    // CallKit 硬件通话按键捕获（专用于 HFP 通话模式下 100% 捕获蓝牙耳机实体挂断键）
+    private var callProvider: CXProvider?
+    private var currentCallUUID: UUID?
+
     // 后台轮询任务与看门狗
     private var replyPollingTask: URLSessionDataTask?
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
+    private var maxDurationTimer: Timer?
+    private var wasOtherAudioPlaying = false
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -76,6 +83,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
+        setupCallKit()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -150,15 +158,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
         if type == .began {
             print("[WearableService] 收到系统音频打断 (如普通电话呼入)，底噪暂停让路")
+            wasOtherAudioPlaying = true
             silentPlayer?.pause()
         } else if type == .ended {
             print("[WearableService] 系统音频打断结束，自动重新激活音频会话并夺回按键焦点")
+            wasOtherAudioPlaying = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self = self, self.isListening else { return }
-                self.setupAudioSession(forRecording: self.isRecording)
-                self.registerRemoteCommands()
-                self.updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
-                self.ensureSilentPlayerRunning()
+                self.reactivateStandby()
             }
         }
     }
@@ -171,14 +178,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
 
         if type == .begin {
-            print("[WearableService] 其他 App 开始播放音频 (基于 mixWithOthers 和平混音，静音底噪不中断)")
+            print("[WearableService] 其他 App 开始发声 (标记让路)")
+            wasOtherAudioPlaying = true
         } else if type == .end {
-            print("[WearableService] 其他 App 播放结束，自动重置耳机按键焦点与状态")
+            print("[WearableService] 其他 App 停止发声，自动重置耳机按键焦点")
+            wasOtherAudioPlaying = false
             if isListening && !isRecording && !isPlayingAudio {
-                self.setupAudioSession(forRecording: false)
-                self.registerRemoteCommands()
-                self.updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
-                self.ensureSilentPlayerRunning()
+                reactivateStandby()
             }
         }
     }
@@ -233,21 +239,22 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     private func startKeepaliveWatchdog() {
         keepaliveWatchdogTimer?.invalidate()
-        keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self = self, self.isListening, !self.isRecording, !self.isPlayingAudio else { return }
 
-            // 如果其他 App (如音乐、微信语音) 正在发声，礼貌等待，不强行打扰
-            if AVAudioSession.sharedInstance().isOtherAudioPlaying {
+            let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
+            if isOtherPlaying {
+                self.wasOtherAudioPlaying = true
+                // 其他 App 正在发声（音乐、微信语音等），礼貌让路，避免干扰
                 return
             }
 
-            // 当其他音频停止发声，且保活播放器未在运行，自动激活会话并夺回耳机待命控制权
-            if self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false) {
-                print("[WearableService] 看门狗：其他音频已停止，自动重新激活会话并拉起待命保活")
-                self.setupAudioSession(forRecording: false)
-                self.registerRemoteCommands()
-                self.updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
-                self.ensureSilentPlayerRunning()
+            // 当其他音频停止发声 (wasOtherAudioPlaying 从 true 变为 false)
+            // 或者保活播放器由于任何原因未运行，自动重新激活会话并夺回耳机待命控制权
+            if self.wasOtherAudioPlaying || self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false) {
+                print("[WearableService] 看门狗：其他音频已停止或保活中断，无缝重新激活会话并夺回耳机实体键")
+                self.wasOtherAudioPlaying = false
+                self.reactivateStandby()
             }
         }
     }
@@ -257,17 +264,23 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         keepaliveWatchdogTimer = nil
     }
 
+    public func reactivateStandby() {
+        guard isListening, !isRecording, !isPlayingAudio else { return }
+        setupAudioSession(forRecording: false)
+        registerRemoteCommands()
+        updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
+        // 重启静音保活播放器，注入新的活跃音频流，强力向系统确认活跃播放状态
+        silentPlayer?.stop()
+        silentPlayer = nil
+        ensureSilentPlayerRunning()
+    }
+
     // MARK: - 监听启动与停止
     public func startListening() {
         guard !isListening else { return }
-        setupAudioSession(forRecording: false)
-        ensureSilentPlayerRunning()
-        startKeepaliveWatchdog()
-
-        registerRemoteCommands()
-        updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
-
         isListening = true
+        reactivateStandby()
+        startKeepaliveWatchdog()
         notifyStatusChanged()
         print("[WearableService] 穿戴按键后台监听已启动 (已置为 .playback A2DP)")
     }
@@ -275,6 +288,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public func stopListening() {
         guard isListening else { return }
         isListening = false
+
+        stopMaxDurationTimer()
+        if let callUUID = currentCallUUID {
+            currentCallUUID = nil
+            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .localEnded)
+        }
 
         if isRecording {
             stopRecording(shouldProcess: false)
@@ -469,6 +488,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
+            // 启动 CallKit 会话，确保 HFP 通话模式下耳机的物理按键（挂断信号 AT+CHUP）能被 iOS 100% 捕获
+            let callUUID = UUID()
+            self.currentCallUUID = callUUID
+            self.callProvider?.reportOutgoingCall(with: callUUID, connectedAt: Date())
+
+            startMaxDurationTimer()
+
             updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
@@ -480,6 +506,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
+
+        stopMaxDurationTimer()
+
+        // 结束 CallKit 通话
+        if let callUUID = currentCallUUID {
+            currentCallUUID = nil
+            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
+        }
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -857,5 +891,60 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         data.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian) { Array($0) })
         data.append(Data(count: Int(dataSize)))
         return data
+    }
+
+    // MARK: - CallKit 硬件通话按键捕获 (专用于 HFP 通话模式下 100% 捕获蓝牙耳机实体按键)
+    private func setupCallKit() {
+        let configuration = CXProviderConfiguration()
+        configuration.supportsVideo = false
+        configuration.maximumCallGroups = 1
+        configuration.maximumCallsPerCallGroup = 1
+        configuration.supportedHandleTypes = [.generic]
+        configuration.includesCallsInRecents = false
+
+        callProvider = CXProvider(configuration: configuration)
+        callProvider?.setDelegate(self, queue: DispatchQueue.main)
+    }
+
+    public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        print("[WearableService] CallKit 呼叫启动事务完成")
+        action.fulfill()
+        provider.reportOutgoingCall(with: action.callUUID, connectedAt: Date())
+    }
+
+    public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        print("[WearableService] 捕获到耳机硬件挂断键 (CXEndCallAction) -> 立即停止录音并发送！")
+        let duration = Date().timeIntervalSince(self.recordingStartTime ?? Date())
+        if duration < 0.8 {
+            print("[WearableService] 录音仅 \(String(format: "%.2f", duration))s，忽略防抖连击")
+            action.fulfill()
+            return
+        }
+        self.currentCallUUID = nil
+        action.fulfill()
+        if self.isRecording {
+            self.stopRecording(shouldProcess: true)
+        }
+    }
+
+    public func providerDidReset(_ provider: CXProvider) {
+        print("[WearableService] CallKit Provider reset")
+        // 关键安全守卫：Provider 重置时仅清理句柄，绝对禁止自动触发停止录音！彻底根绝“一闪而过”问题！
+        self.currentCallUUID = nil
+    }
+
+    // MARK: - 最大录音时长看门狗 (90秒兜底)
+    private func startMaxDurationTimer() {
+        stopMaxDurationTimer()
+        maxDurationTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
+            guard let self = self, self.isRecording else { return }
+            print("[WearableService] 达到最大安全录音时长(90s)，自动结束并发送")
+            self.stopRecording(shouldProcess: true)
+        }
+    }
+
+    private func stopMaxDurationTimer() {
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
     }
 }
