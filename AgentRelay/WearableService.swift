@@ -94,7 +94,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 try session.setCategory(
                     .playback,
                     mode: .default,
-                    options: [.allowBluetooth, .allowBluetoothA2DP]
+                    options: [.allowBluetoothA2DP]
                 )
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
@@ -126,7 +126,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
-                    setupAudioSession()
+                    setupAudioSession(forRecording: isRecording)
                     if isListening || isRecording {
                         ensureSilentPlayerRunning()
                     }
