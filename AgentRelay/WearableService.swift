@@ -44,7 +44,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var replyPollingTask: URLSessionDataTask?
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
+    private var vadTimer: Timer?
     private var maxDurationTimer: Timer?
+    private var silenceSeconds: Double = 0
+    private var hasSpoken: Bool = false
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -395,12 +398,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键或静音停顿90秒发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
 
-            // 启动最长 90 秒超时保护（移除短时间静音检测，全由用户按键控制结束）
-            startTimeoutWatchdog()
+            // 启动 VAD 静音检测（停顿 90 秒自动结束并提交）
+            startVADWatchdog()
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
             setupAudioSession(forRecording: false)
@@ -410,7 +413,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
 
-        stopTimeoutWatchdog()
+        stopVADWatchdog()
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -454,18 +457,45 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - 最长 90 秒安全超时保护（纯手动按键控制，杜绝静音误切断）
-    private func startTimeoutWatchdog() {
-        stopTimeoutWatchdog()
+    // MARK: - 智能静音检测 (VAD 为 90 秒停顿) 与安全兜底
+    private func startVADWatchdog() {
+        stopVADWatchdog()
+        silenceSeconds = 0
+        hasSpoken = false
 
-        maxDurationTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
+        // 1. 静音检测定时器 (100ms 刷新一次麦克风电平)
+        vadTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let recorder = self.audioRecorder, self.isRecording else { return }
+            recorder.updateMeters()
+            let power = recorder.averagePower(forChannel: 0)
+
+            // power 范围约为 -160 (完全静音) 到 0 (最大音量)
+            if power > -42.0 {
+                // 用户正在说话
+                self.hasSpoken = true
+                self.silenceSeconds = 0
+            } else {
+                // 环境底噪或停顿
+                self.silenceSeconds += 0.1
+                // 停顿超过 90 秒 -> 判定已停止说话，自动结束并提交！
+                if self.silenceSeconds >= 90.0 {
+                    print("[WearableService] VAD: 检测到静音停顿 90 秒，自动结束并提交")
+                    self.stopRecording(shouldProcess: self.hasSpoken)
+                }
+            }
+        }
+
+        // 2. 超长录音紧急兜底 (15 分钟)，防止录音过程被总时长过早截断
+        maxDurationTimer = Timer.scheduledTimer(withTimeInterval: 900.0, repeats: false) { [weak self] _ in
             guard let self = self, self.isRecording else { return }
-            print("[WearableService] 录音达到 90 秒最大时限，自动结束并提交")
+            print("[WearableService] 录音达到 15 分钟安全上限，自动结束并提交")
             self.stopRecording(shouldProcess: true)
         }
     }
 
-    private func stopTimeoutWatchdog() {
+    private func stopVADWatchdog() {
+        vadTimer?.invalidate()
+        vadTimer = nil
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
     }
