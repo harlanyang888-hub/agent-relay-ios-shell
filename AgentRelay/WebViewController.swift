@@ -18,6 +18,16 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         setupWebView()
         setupIndicator()
         loadInitialURL()
+
+        // 关键保活与响应：进入 App 立即自动开启耳机监听，开箱即用无需网页手动开启
+        WearableService.shared.startListening()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !WearableService.shared.isListening {
+            WearableService.shared.startListening()
+        }
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {

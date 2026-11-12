@@ -74,14 +74,15 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 音频会话常驻设置（永远保持 playAndRecord + mixWithOthers，绝不降级切换）
+    // MARK: - 音频会话常驻设置（保持 playAndRecord，严格禁止 mixWithOthers 避免按键丢失）
     private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
+            // 绝不可包含 .mixWithOthers！包含 mixWithOthers 会导致 iOS 判定本 App 为非主媒体应用，直接静默屏蔽所有 MPRemoteCommandCenter 耳机硬件按键！
             try session.setCategory(
                 .playAndRecord,
                 mode: .default,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
             )
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
@@ -226,6 +227,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private func registerRemoteCommands() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
+        // 注册前先清空旧 Target，杜绝 Target 堆叠累加导致的失效
+        commandCenter.togglePlayPauseCommand.removeTarget(nil)
+        commandCenter.playCommand.removeTarget(nil)
+        commandCenter.pauseCommand.removeTarget(nil)
+        commandCenter.stopCommand.removeTarget(nil)
+        commandCenter.nextTrackCommand.removeTarget(nil)
+        commandCenter.previousTrackCommand.removeTarget(nil)
+
         // 1. 耳机单击（播放/暂停切换）
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
@@ -327,14 +336,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 return
             }
 
-            // 3. 如果在待命监听中 -> 首次按键：开启录音
-            if self.isListening {
-                self.startRecording()
-                return
+            // 3. 首次按键：开启录音（无论当前是否已被 Web 显式标记，只要捕获到按键，100% 响应并启动录音）
+            if !self.isListening {
+                self.startListening()
             }
-
-            // 兜底触感
-            self.triggerFeedbackHaptic()
+            self.startRecording()
         }
     }
 
