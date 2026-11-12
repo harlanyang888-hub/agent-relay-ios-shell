@@ -45,7 +45,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
     private var vadTimer: Timer?
-    private var maxDurationTimer: Timer?
     private var silenceSeconds: Double = 0
     private var hasSpoken: Bool = false
 
@@ -457,13 +456,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - 智能静音检测 (VAD 为 90 秒停顿) 与安全兜底
+    // MARK: - 智能静音停顿检测 (VAD 为 90 秒停顿，无录音总时长限制)
     private func startVADWatchdog() {
         stopVADWatchdog()
         silenceSeconds = 0
         hasSpoken = false
 
-        // 1. 静音检测定时器 (100ms 刷新一次麦克风电平)
+        // 静音停顿检测定时器 (100ms 刷新一次麦克风电平)
         vadTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self, let recorder = self.audioRecorder, self.isRecording else { return }
             recorder.updateMeters()
@@ -477,27 +476,18 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             } else {
                 // 环境底噪或停顿
                 self.silenceSeconds += 0.1
-                // 停顿超过 90 秒 -> 判定已停止说话，自动结束并提交！
+                // 仅当停顿持续达到 90 秒时，才判定说话完毕并自动发送
                 if self.silenceSeconds >= 90.0 {
-                    print("[WearableService] VAD: 检测到静音停顿 90 秒，自动结束并提交")
+                    print("[WearableService] VAD: 检测到静音停顿达到 90 秒，自动结束并提交")
                     self.stopRecording(shouldProcess: self.hasSpoken)
                 }
             }
-        }
-
-        // 2. 超长录音紧急兜底 (15 分钟)，防止录音过程被总时长过早截断
-        maxDurationTimer = Timer.scheduledTimer(withTimeInterval: 900.0, repeats: false) { [weak self] _ in
-            guard let self = self, self.isRecording else { return }
-            print("[WearableService] 录音达到 15 分钟安全上限，自动结束并提交")
-            self.stopRecording(shouldProcess: true)
         }
     }
 
     private func stopVADWatchdog() {
         vadTimer?.invalidate()
         vadTimer = nil
-        maxDurationTimer?.invalidate()
-        maxDurationTimer = nil
     }
 
     // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
