@@ -292,7 +292,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         stopMaxDurationTimer()
         if let callUUID = currentCallUUID {
             currentCallUUID = nil
-            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .localEnded)
+            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
         }
 
         if isRecording {
