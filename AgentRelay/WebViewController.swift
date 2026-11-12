@@ -247,7 +247,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     func wearableServiceDidFinishRecording(base64: String, mimeType: String, transcript: String, duration: TimeInterval) {
         let payload: [String: Any] = [
-            "base64": base64,
+            "base64": "",
             "mimeType": mimeType,
             "transcript": transcript,
             "duration": duration

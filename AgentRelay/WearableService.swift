@@ -3,6 +3,7 @@ import UIKit
 import AVFoundation
 import MediaPlayer
 import AudioToolbox
+import CallKit
 
 public protocol WearableServiceDelegate: AnyObject {
     func wearableServiceDidChangeDeviceStatus(connected: Bool, deviceName: String, isListening: Bool, isRecording: Bool)
@@ -13,7 +14,7 @@ public protocol WearableServiceDelegate: AnyObject {
 
 /// 智能穿戴耳机后台中枢服务
 /// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、原生直接发往网关以及自动回播打断
-public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
+public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate, CXProviderDelegate {
 
     public static let shared = WearableService()
 
@@ -44,9 +45,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var replyPollingTask: URLSessionDataTask?
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
-    private var vadTimer: Timer?
-    private var silenceSeconds: Double = 0
-    private var hasSpoken: Bool = false
+
+    // CallKit 硬件通话按键捕获（专用于 HFP 模式下捕获蓝牙耳机实体按键）
+    private var callProvider: CXProvider?
+    private var currentCallUUID: UUID?
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -58,6 +60,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
+        setupCallKit()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -432,12 +435,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (停顿2.5秒自动发送)")
+            // 启动 CallKit 会话，确保 HFP 通话模式下耳机的物理按键（挂断信号）能被系统 100% 捕获
+            let callUUID = UUID()
+            self.currentCallUUID = callUUID
+            self.callProvider?.reportOutgoingCall(with: callUUID, connectedAt: Date())
+
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击耳机按键停止并发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
-
-            // 启动 VAD 静音检测（正常说话后停顿 2.5 秒自动提交）
-            startVADWatchdog()
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
             setupAudioSession(forRecording: false)
@@ -447,7 +452,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
 
-        stopVADWatchdog()
+        // 结束 CallKit 通话
+        if let callUUID = currentCallUUID {
+            currentCallUUID = nil
+            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
+        }
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -480,10 +489,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         // 核心突破点：原生 Swift 直接通过 URLSession 后台上传给网关，绝对不受 WebKit 挂起影响！
         self.sendAudioToGatewayNative(audioBase64: base64String, duration: duration)
 
-        // 同时派发给 Web 前台（如果在前台可以同步显示）
+        // 同时派发给 Web 前台（如果在前台可以同步显示，不传 base64 防前端重复提交）
         DispatchQueue.main.async { [weak self] in
             self?.delegate?.wearableServiceDidFinishRecording(
-                base64: base64String,
+                base64: "",
                 mimeType: "audio/m4a",
                 transcript: "【耳机语音指令】",
                 duration: duration
@@ -491,43 +500,33 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - 智能静音停顿检测 (VAD 为 2.5 秒自然停顿，未开口 10 秒自动退出)
-    private func startVADWatchdog() {
-        stopVADWatchdog()
-        silenceSeconds = 0
-        hasSpoken = false
+    // MARK: - CallKit 初始化与代理回调 (用于 HFP 模式下完美捕获蓝牙耳机实体按键)
+    private func setupCallKit() {
+        let configuration = CXProviderConfiguration()
+        configuration.supportsVideo = false
+        configuration.maximumCallGroups = 1
+        configuration.maximumCallsPerCallGroup = 1
+        configuration.supportedHandleTypes = [.generic]
+        configuration.includesCallsInRecents = false
 
-        // 静音停顿检测定时器 (100ms 刷新一次麦克风电平)
-        vadTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self, let recorder = self.audioRecorder, self.isRecording else { return }
-            recorder.updateMeters()
-            let power = recorder.averagePower(forChannel: 0)
-
-            // power 范围约为 -160 (完全静音) 到 0 (最大音量)
-            if power > -42.0 {
-                // 用户正在说话
-                self.hasSpoken = true
-                self.silenceSeconds = 0
-            } else {
-                // 环境底噪或停顿
-                self.silenceSeconds += 0.1
-                // 1. 如果已开口说话，且随后自然停顿满 2.5 秒 -> 判定说完，自动结束并提交给 voice-hub
-                if self.hasSpoken && self.silenceSeconds >= 2.5 {
-                    print("[WearableService] VAD: 检测到正常停顿 2.5 秒，自动结束并提交")
-                    self.stopRecording(shouldProcess: true)
-                }
-                // 2. 如果误按开启录音但 10 秒内一直没说话 -> 自动安全取消，避免耗电
-                else if !self.hasSpoken && self.silenceSeconds >= 10.0 {
-                    print("[WearableService] VAD: 10 秒内未检测到说话声音，取消本次录音")
-                    self.stopRecording(shouldProcess: false)
-                }
-            }
-        }
+        callProvider = CXProvider(configuration: configuration)
+        callProvider?.setDelegate(self, queue: DispatchQueue.main)
     }
 
-    private func stopVADWatchdog() {
-        vadTimer?.invalidate()
-        vadTimer = nil
+    public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        print("[WearableService] 捕获到耳机硬件挂断键 (CXEndCallAction) -> 立即停止录音并发送！")
+        if self.isRecording {
+            self.stopRecording(shouldProcess: true)
+        }
+        action.fulfill()
+        self.currentCallUUID = nil
+    }
+
+    public func providerDidReset(_ provider: CXProvider) {
+        if self.isRecording {
+            self.stopRecording(shouldProcess: true)
+        }
+        self.currentCallUUID = nil
     }
 
     // MARK: - 原生后台 HTTP 发送（100% 保证黑屏放口袋也能发出）
