@@ -206,10 +206,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
                 WearableService.shared.playBeepStart()
             }
         case "syncContext":
-            if let convId = body["conversationId"] as? String, !convId.isEmpty {
-                WearableService.shared.currentConversationId = convId
-                print("[WebViewController] 同步当前会话 ID: \(convId)")
-            }
             if let cookie = body["cookie"] as? String, !cookie.isEmpty {
                 WearableService.shared.authCookie = cookie
             }

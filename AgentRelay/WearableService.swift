@@ -75,6 +75,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             name: AVAudioSession.interruptionNotification,
             object: nil
         )
+
+        // 监听其他 App 音频开始/停止通知（如微信语音、音乐播放器）
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSecondaryAudioHint),
+            name: AVAudioSession.silenceSecondaryAudioHintNotification,
+            object: nil
+        )
     }
 
     // MARK: - 音频会话设置（关键状态隔离）
@@ -121,7 +129,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return
         }
 
-        if type == .ended {
+        if type == .began {
+            print("[WearableService] 收到系统音频打断 (微信语音/电话打入)，底噪立即暂停让路")
+            silentPlayer?.pause()
+        } else if type == .ended {
+            print("[WearableService] 系统音频打断结束，恢复监听")
             if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
@@ -130,6 +142,29 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                         ensureSilentPlayerRunning()
                     }
                 }
+            } else {
+                setupAudioSession(forRecording: isRecording)
+                if isListening || isRecording {
+                    ensureSilentPlayerRunning()
+                }
+            }
+        }
+    }
+
+    @objc private func handleSecondaryAudioHint(notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeValue = info[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt,
+              let type = AVAudioSession.SilenceSecondaryAudioHintType(rawValue: typeValue) else {
+            return
+        }
+
+        if type == .begin {
+            print("[WearableService] 其他 App 开始播放主音频，底噪主动静音避免抢占通道")
+            silentPlayer?.pause()
+        } else if type == .end {
+            print("[WearableService] 其他 App 播放完毕，恢复耳机保活")
+            if isListening && !isRecording && !isPlayingAudio {
+                ensureSilentPlayerRunning()
             }
         }
     }
@@ -397,11 +432,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键或静音停顿90秒发送)")
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (停顿2.5秒自动发送)")
             notifyStatusChanged()
             print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
 
-            // 启动 VAD 静音检测（停顿 90 秒自动结束并提交）
+            // 启动 VAD 静音检测（正常说话后停顿 2.5 秒自动提交）
             startVADWatchdog()
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
@@ -456,7 +491,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    // MARK: - 智能静音停顿检测 (VAD 为 90 秒停顿，无录音总时长限制)
+    // MARK: - 智能静音停顿检测 (VAD 为 2.5 秒自然停顿，未开口 10 秒自动退出)
     private func startVADWatchdog() {
         stopVADWatchdog()
         silenceSeconds = 0
@@ -476,10 +511,15 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             } else {
                 // 环境底噪或停顿
                 self.silenceSeconds += 0.1
-                // 仅当停顿持续达到 90 秒时，才判定说话完毕并自动发送
-                if self.silenceSeconds >= 90.0 {
-                    print("[WearableService] VAD: 检测到静音停顿达到 90 秒，自动结束并提交")
-                    self.stopRecording(shouldProcess: self.hasSpoken)
+                // 1. 如果已开口说话，且随后自然停顿满 2.5 秒 -> 判定说完，自动结束并提交给 voice-hub
+                if self.hasSpoken && self.silenceSeconds >= 2.5 {
+                    print("[WearableService] VAD: 检测到正常停顿 2.5 秒，自动结束并提交")
+                    self.stopRecording(shouldProcess: true)
+                }
+                // 2. 如果误按开启录音但 10 秒内一直没说话 -> 自动安全取消，避免耗电
+                else if !self.hasSpoken && self.silenceSeconds >= 10.0 {
+                    print("[WearableService] VAD: 10 秒内未检测到说话声音，取消本次录音")
+                    self.stopRecording(shouldProcess: false)
                 }
             }
         }
@@ -508,15 +548,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
 
-        var payload: [String: Any] = [
+        // 每次录音均为全新独立会话，默认工作目录定向至 voice-hub 语音中枢
+        let payload: [String: Any] = [
             "audioBase64": audioBase64,
             "filename": "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a",
             "mimeType": "audio/m4a",
-            "prompt": "【耳机语音指令】"
+            "prompt": "【耳机语音指令】",
+            "hostId": "ubuntu",
+            "project": "ubuntu-antigravity",
+            "cwd": "/home/complicated/project/voice-hub"
         ]
-        if let convId = currentConversationId, !convId.isEmpty {
-            payload["conversationId"] = convId
-        }
 
         guard let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
             print("[WearableService] 无法序列化语音上传请求体")
@@ -549,13 +590,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 播放轻快上升音：提示已发送成功
             self.playBeepStart()
 
-            // 解析返回的 conversationId
+            // 解析返回的全新 conversationId 用于轮询该会话的 Agent 回复，轮询完毕朗读到耳机
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let convId = json["conversationId"] as? String {
-                self.currentConversationId = convId
                 DispatchQueue.main.async {
                     self.updateNowPlayingInfo(statusText: "🟡 已发送，Agent 正在思考...")
-                    // 启动后台轮询等待 Agent 回复，回复完成后自动朗读到耳机
                     self.startPollingAgentReply(conversationId: convId)
                 }
             }
