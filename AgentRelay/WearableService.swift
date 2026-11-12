@@ -3,7 +3,6 @@ import UIKit
 import AVFoundation
 import MediaPlayer
 import AudioToolbox
-import CallKit
 
 public protocol WearableServiceDelegate: AnyObject {
     func wearableServiceDidChangeDeviceStatus(connected: Bool, deviceName: String, isListening: Bool, isRecording: Bool)
@@ -35,7 +34,7 @@ public final class WearableEventDispatcher {
 
 /// 智能穿戴耳机后台中枢服务
 /// 负责后台音频保活、蓝牙耳机实体键捕获、后台麦克风录音、原生直接发往网关以及自动回播打断
-public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate, CXProviderDelegate {
+public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
 
     public static let shared = WearableService()
 
@@ -62,10 +61,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var recordingStartTime: Date?
     private var tempAudioFileURL: URL?
 
-    // CallKit 硬件通话按键捕获（专用于 HFP 通话模式下 100% 捕获蓝牙耳机实体挂断键）
-    private var callProvider: CXProvider?
-    private var currentCallUUID: UUID?
-
     // 后台轮询任务与看门狗
     private var replyPollingTask: URLSessionDataTask?
     private var pollTimer: Timer?
@@ -83,7 +78,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         super.init()
         feedbackGenerator.prepare()
         setupBeepPlayers()
-        setupCallKit()
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
@@ -111,19 +105,21 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 音频会话设置
+    // MARK: - 音频会话设置 (纯 A2DP 协议，严禁 HFP 通话模式)
     // 待机状态使用 .playback 专属模式（A2DP 纯播放），这是 iOS 系统分发 MPRemoteCommandCenter 耳机实体按键的绝对必要前提！
-    // 录音状态瞬时切换至 .playAndRecord，录音结束瞬间切回 .playback。
+    // 录音状态使用 .playAndRecord（严禁使用 .allowBluetooth，保证蓝牙耳机保持在 A2DP 纯音乐协议，杜绝切入 HFP 通话模式）
     private func setupAudioSession(forRecording: Bool) {
         let session = AVAudioSession.sharedInstance()
         do {
             if forRecording {
+                // 纯 A2DP 高清录音：绝对不加 .allowBluetooth，彻底杜绝耳机切入 HFP 通话/打电话模式！
                 try session.setCategory(
                     .playAndRecord,
                     mode: .default,
-                    options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+                    options: [.allowBluetoothA2DP, .defaultToSpeaker]
                 )
             } else {
+                // 纯 A2DP 待命模式：接收 MPRemoteCommandCenter 耳机实体按键
                 try session.setCategory(
                     .playback,
                     mode: .default,
@@ -131,7 +127,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 )
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording))")
+            print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording), 纯 A2DP 协议，无 HFP 通话)")
         } catch {
             print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
         }
@@ -290,10 +286,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         isListening = false
 
         stopMaxDurationTimer()
-        if let callUUID = currentCallUUID {
-            currentCallUUID = nil
-            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
-        }
 
         if isRecording {
             stopRecording(shouldProcess: false)
@@ -488,11 +480,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // 保持静音底噪保活
             ensureSilentPlayerRunning()
 
-            // 启动 CallKit 会话，确保 HFP 通话模式下耳机的物理按键（挂断信号 AT+CHUP）能被 iOS 100% 捕获
-            let callUUID = UUID()
-            self.currentCallUUID = callUUID
-            self.callProvider?.reportOutgoingCall(with: callUUID, connectedAt: Date())
-
             startMaxDurationTimer()
 
             updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
@@ -508,12 +495,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         guard isRecording else { return }
 
         stopMaxDurationTimer()
-
-        // 结束 CallKit 通话
-        if let callUUID = currentCallUUID {
-            currentCallUUID = nil
-            callProvider?.reportCall(with: callUUID, endedAt: Date(), reason: .remoteEnded)
-        }
 
         // 立即触发确认结束音与震动
         playBeepEnd()
@@ -891,46 +872,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         data.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian) { Array($0) })
         data.append(Data(count: Int(dataSize)))
         return data
-    }
-
-    // MARK: - CallKit 硬件通话按键捕获 (专用于 HFP 通话模式下 100% 捕获蓝牙耳机实体按键)
-    private func setupCallKit() {
-        let configuration = CXProviderConfiguration()
-        configuration.supportsVideo = false
-        configuration.maximumCallGroups = 1
-        configuration.maximumCallsPerCallGroup = 1
-        configuration.supportedHandleTypes = [.generic]
-        configuration.includesCallsInRecents = false
-
-        callProvider = CXProvider(configuration: configuration)
-        callProvider?.setDelegate(self, queue: DispatchQueue.main)
-    }
-
-    public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        print("[WearableService] CallKit 呼叫启动事务完成")
-        action.fulfill()
-        provider.reportOutgoingCall(with: action.callUUID, connectedAt: Date())
-    }
-
-    public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        print("[WearableService] 捕获到耳机硬件挂断键 (CXEndCallAction) -> 立即停止录音并发送！")
-        let duration = Date().timeIntervalSince(self.recordingStartTime ?? Date())
-        if duration < 0.8 {
-            print("[WearableService] 录音仅 \(String(format: "%.2f", duration))s，忽略防抖连击")
-            action.fulfill()
-            return
-        }
-        self.currentCallUUID = nil
-        action.fulfill()
-        if self.isRecording {
-            self.stopRecording(shouldProcess: true)
-        }
-    }
-
-    public func providerDidReset(_ provider: CXProvider) {
-        print("[WearableService] CallKit Provider reset")
-        // 关键安全守卫：Provider 重置时仅清理句柄，绝对禁止自动触发停止录音！彻底根绝“一闪而过”问题！
-        self.currentCallUUID = nil
     }
 
     // MARK: - 最大录音时长看门狗 (90秒兜底)
