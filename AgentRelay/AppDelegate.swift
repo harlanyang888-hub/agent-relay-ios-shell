@@ -7,6 +7,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var webViewController: WebViewController?
     private var lastHandledURLString: String?
     private var lastHandledTime: TimeInterval = 0
+    private var pendingRecordingAction: String?
+    private var pendingRecordingContext: [String: String] = [:]
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         if launchOptions?[.bluetoothCentrals] != nil { _ = BLEProbe.shared }
@@ -35,6 +37,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         DeviceDiagnostics.shared.log("App became active category=\(AVAudioSession.sharedInstance().category.rawValue)")
+        performPendingRecordingAction()
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
@@ -52,6 +55,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         lastHandledURLString = urlStr
         lastHandledTime = now
 
+        if url.scheme?.lowercased() == "agentrelay", url.host?.lowercased() == "record",
+           ["/start", "/stop", "/cancel"].contains(url.path.lowercased()) {
+            pendingRecordingAction = url.path.lowercased()
+            let allowed = ["hostId", "project", "cwd", "prompt", "conversationId", "title"]
+            pendingRecordingContext = [:]
+            for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
+                if allowed.contains(item.name), let value = item.value, !value.isEmpty {
+                    pendingRecordingContext[item.name] = value
+                }
+            }
+            performPendingRecordingAction()
+            return
+        }
         webViewController?.handleIncomingURL(url)
+    }
+
+    private func performPendingRecordingAction() {
+        // URL 打开时可能仍处于 inactive；等前台激活后再取得麦克风。
+        guard UIApplication.shared.applicationState == .active,
+              let action = pendingRecordingAction else { return }
+        pendingRecordingAction = nil
+        let context = pendingRecordingContext
+        pendingRecordingContext = [:]
+        if action == "/start" {
+            WearableService.shared.startShortcutRecording(context: context)
+        } else {
+            WearableService.shared.stopRecording(shouldProcess: action == "/stop")
+        }
     }
 }

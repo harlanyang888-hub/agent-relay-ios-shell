@@ -6,6 +6,11 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     private var activityIndicator: UIActivityIndicatorView!
     private var pendingTargetURL: URL?
     private var pendingShareJSON: String?
+    private let recordingLabel = UILabel()
+    private let recordingButton = UIButton(type: .system)
+    private let cancelRecordingButton = UIButton(type: .system)
+    private var recordingUITimer: Timer?
+    private var webBottomConstraint: NSLayoutConstraint?
 
     private let targetURLString = "https://complicated.taildbe095.ts.net:8443"
 
@@ -18,6 +23,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         setupWebView()
         setupIndicator()
         loadInitialURL()
+        setupRecordingControls()
         let deviceTestButton = UIButton(type: .system)
         deviceTestButton.setTitle("设备测试", for: .normal)
         deviceTestButton.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.95)
@@ -38,6 +44,68 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        refreshRecordingControls()
+    }
+
+    private func setupRecordingControls() {
+        let panel = UIStackView()
+        panel.axis = .vertical
+        panel.spacing = 6
+        panel.backgroundColor = .secondarySystemBackground
+        panel.layer.cornerRadius = 16
+        panel.isLayoutMarginsRelativeArrangement = true
+        panel.layoutMargins = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        recordingLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        recordingLabel.numberOfLines = 3
+        let actions = UIStackView(arrangedSubviews: [recordingButton, cancelRecordingButton])
+        actions.spacing = 18
+        recordingButton.addTarget(self, action: #selector(toggleNativeRecording), for: .touchUpInside)
+        cancelRecordingButton.setTitle("取消录音", for: .normal)
+        cancelRecordingButton.addTarget(self, action: #selector(cancelNativeRecording), for: .touchUpInside)
+        panel.addArrangedSubview(recordingLabel)
+        panel.addArrangedSubview(actions)
+        view.addSubview(panel)
+        webBottomConstraint?.isActive = false
+        NSLayoutConstraint.activate([
+            panel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            panel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            panel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            webView.bottomAnchor.constraint(equalTo: panel.topAnchor, constant: -8)
+        ])
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshRecordingControls),
+            name: Notification.Name("AgentRelayRecordingStatus"), object: nil)
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refreshRecordingControls() }
+        RunLoop.main.add(timer, forMode: .common)
+        recordingUITimer = timer
+        refreshRecordingControls()
+    }
+
+    @objc private func toggleNativeRecording() {
+        let service = WearableService.shared
+        if service.isRecording { service.stopRecording() }
+        else { service.startShortcutRecording() }
+    }
+
+    @objc private func cancelNativeRecording() {
+        WearableService.shared.stopRecording(shouldProcess: false)
+    }
+
+    @objc private func refreshRecordingControls() {
+        let service = WearableService.shared
+        recordingButton.setTitle(service.isRecording ? "结束并发送" : "开始录音", for: .normal)
+        cancelRecordingButton.isHidden = !service.isRecording
+        if service.isRecording {
+            let seconds = Int(service.capturedRecordingDuration)
+            recordingLabel.text = String(format: "正在录音 %02d:%02d · %@\n可以切换到其他 App；回来点结束并发送", seconds / 60, seconds % 60, service.recordingInputName)
+        } else {
+            recordingLabel.text = service.recordingStatus
+        }
+    }
+
+    deinit {
+        recordingUITimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
     }
 
     @objc private func openDeviceDiagnostics() {
@@ -120,10 +188,11 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         webView.allowsBackForwardNavigationGestures = true
 
         view.addSubview(webView)
+        webBottomConstraint = webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        webBottomConstraint?.isActive = true
 
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
