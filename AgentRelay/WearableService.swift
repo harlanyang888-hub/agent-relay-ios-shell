@@ -119,34 +119,29 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         )
     }
 
-    // MARK: - 音频会话设置 (纯 A2DP 协议，严禁 HFP 通话模式)
-    // 待机状态使用 .playback 专属模式（A2DP 纯播放），这是 iOS 系统分发 MPRemoteCommandCenter 耳机实体按键的绝对必要前提！
-    // 录音状态使用 .playAndRecord（严禁使用 .allowBluetooth，保证蓝牙耳机保持在 A2DP 纯音乐协议，杜绝切入 HFP 通话模式）
+    // MARK: - 音频会话设置
+    // 在前台监听时就配置输入能力，待机和录音保持同一类别，减少后台路由重建。
+    // 不开启 HFP 输入；此轮 POC 继续使用手机麦克风。
     @discardableResult
     private func setupAudioSession(forRecording: Bool) -> Bool {
         let session = AVAudioSession.sharedInstance()
         do {
-            if forRecording {
-                // 纯 A2DP 高清录音：绝对不加 .allowBluetooth，彻底杜绝耳机切入 HFP 通话/打电话模式！
+            let options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
+            if session.category != .playAndRecord || session.mode != .default || session.categoryOptions != options {
                 try session.setCategory(
                     .playAndRecord,
                     mode: .default,
-                    options: [.allowBluetoothA2DP, .defaultToSpeaker]
+                    options: options
                 )
-                try session.setActive(true)
-            } else {
-                // 纯 A2DP 待命模式：接收 MPRemoteCommandCenter 耳机实体按键
-                try session.setCategory(
-                    .playback,
-                    mode: .default,
-                    options: [.allowBluetoothA2DP]
-                )
-                try session.setActive(true)
             }
+            try session.setActive(true)
+            DeviceDiagnostics.shared.log("Audio session active recording=\(forRecording) category=\(session.category.rawValue) inputAvailable=\(session.isInputAvailable) sampleRate=\(session.sampleRate)")
             print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording), 纯 A2DP 协议，无 HFP 通话)")
             return true
         } catch {
             print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
+            let nsError = error as NSError
+            DeviceDiagnostics.shared.log("Audio session error domain=\(nsError.domain) code=\(nsError.code) recording=\(forRecording)")
             return false
         }
     }
@@ -318,7 +313,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             wasOtherAudioPlaying = true
             return
         }
-        setupAudioSession(forRecording: false)
+        guard setupAudioSession(forRecording: false) else { return }
         registerRemoteCommands()
         updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
         // 重启静音保活播放器，注入新的活跃音频流，强力向系统确认活跃播放状态
@@ -334,7 +329,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         reactivateStandby()
         startKeepaliveWatchdog()
         notifyStatusChanged()
-        print("[WearableService] 穿戴按键后台监听已启动 (已置为 .playback A2DP)")
+        print("[WearableService] 穿戴按键监听已启动 (playAndRecord，未开启 HFP 输入)")
     }
 
     public func stopListening() {
@@ -531,9 +526,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         stopAudioPlayback()
         stopPolling()
 
-        // 核心修复：录音启动时彻底停止并释放静音保活播放器！录音机本身就是最高优先级的后台保活源，绝对不可在录音时播放底噪！
-        silentPlayer?.stop()
-        silentPlayer = nil
+        // 保持已有播放流直到录音启动成功，避免后台启动前先失去音频执行资格。
+        DeviceDiagnostics.shared.log("Record request silentPlaying=\(silentPlayer?.isPlaying ?? false) protectedData=\(UIApplication.shared.isProtectedDataAvailable) state=\(UIApplication.shared.applicationState.rawValue)")
 
         // 开启麦克风录音会话模式 (纯 A2DP 高清录音，绝不切换 HFP，保留耳机远程控制)
         guard setupAudioSession(forRecording: true) else {
@@ -562,11 +556,17 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
             recorder.delegate = self
             recorder.isMeteringEnabled = true
-            guard recorder.prepareToRecord(), recorder.record(), recorder.isRecording else {
+            let prepared = recorder.prepareToRecord()
+            // record() 自身会执行 prepare，不因为预准备失败就跳过实际启动。
+            let started = recorder.record()
+            DeviceDiagnostics.shared.log("Recorder result prepared=\(prepared) started=\(started) isRecording=\(recorder.isRecording) category=\(session.category.rawValue)")
+            guard started else {
                 recorder.stop()
                 recoverFromRecordingStartFailure(message: "录音启动失败，请打开 App 重试")
                 return
             }
+            silentPlayer?.stop()
+            silentPlayer = nil
             self.audioRecorder = recorder
             self.isRecording = true
             self.recordingStartTime = Date()
@@ -614,7 +614,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         isRecording = false
         notifyStatusChanged()
 
-        // 关键切回：录音结束后立刻切回 .playback，让蓝牙耳机回归 A2DP，保证下一次按键 100% 捕获！
+        // 结束后保持同一类别，重新开始待机播放。
         setupAudioSession(forRecording: false)
         ensureSilentPlayerRunning()
 

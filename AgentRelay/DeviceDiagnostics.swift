@@ -37,6 +37,9 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     static let shared = BLEProbe()
     private var central: CBCentralManager!
     private(set) var devices: [CBPeripheral] = []
+    private(set) var names: [UUID: String] = [:]
+    private(set) var signals: [UUID: Int] = [:]
+    private var lastRefreshAt: TimeInterval = 0
     private var selected: CBPeripheral?
     private var scanningRequested = false
     private var scanTimeout: Timer?
@@ -58,8 +61,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             return
         }
         devices.removeAll()
-        central.scanForPeripherals(withServices: nil, options: nil)
-        DeviceDiagnostics.shared.log("BLE 前台扫描开始（30 秒），请按防丢器按钮")
+        names.removeAll()
+        signals.removeAll()
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        DeviceDiagnostics.shared.log("BLE 扫描附近强信号设备（30 秒，RSSI≥-80），把防丢器贴近手机并按键")
         scanTimeout?.invalidate()
         scanTimeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.stopScan() }
         onChange?()
@@ -106,11 +111,25 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        guard !devices.contains(where: { $0.identifier == peripheral.identifier }) else { return }
-        devices.append(peripheral)
-        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "未命名"
-        DeviceDiagnostics.shared.log("BLE 发现 \(name) RSSI=\(RSSI) id=\(peripheral.identifier)")
-        onChange?()
+        guard RSSI.intValue < 0, RSSI.intValue >= -80 else { return }
+        let isNew = !devices.contains(where: { $0.identifier == peripheral.identifier })
+        let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "未命名"
+        if isNew { devices.append(peripheral) }
+        names[peripheral.identifier] = name
+        signals[peripheral.identifier] = RSSI.intValue
+        if isNew {
+            let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+            let manufacturer = (advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data())
+                .prefix(18).map { String(format: "%02x", $0) }.joined()
+            let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber
+            DeviceDiagnostics.shared.log("BLE 发现 \(name) RSSI=\(RSSI) id=\(peripheral.identifier) services=\(services) manufacturer=\(manufacturer) connectable=\(connectable?.stringValue ?? "?")")
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if isNew || now - lastRefreshAt > 1 {
+            lastRefreshAt = now
+            // 行顺序保持稳定，避免用户点击时设备因信号变化而换位。
+            onChange?()
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -179,7 +198,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let controls = UIStackView(arrangedSubviews: [scan, disconnect, copy])
         controls.distribution = .fillEqually
         let help = UILabel()
-        help.text = "BLE 仅观测：扫描后点选防丢器，按单击/双击/长按，再复制日志。录音测试会发送给 Agent。"
+        help.text = "BLE 仅观测：只显示附近强信号设备。把防丢器放在手机旁，移动它观察 RSSI，再点选连接。RSSI 越接近 0 信号越强。录音测试会发送给 Agent。"
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
@@ -235,7 +254,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         let peripheral = BLEProbe.shared.devices[indexPath.row]
-        cell.textLabel?.text = peripheral.name ?? "未命名 BLE 设备"
+        let signal = BLEProbe.shared.signals[peripheral.identifier] ?? -100
+        cell.textLabel?.text = "\(BLEProbe.shared.names[peripheral.identifier] ?? peripheral.name ?? "未命名") · \(signal) dBm"
         cell.detailTextLabel?.text = peripheral.identifier.uuidString
         return cell
     }
