@@ -42,7 +42,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // 网关连接与鉴权（原生直连，零依赖 WebKit JS）
     public var gatewayBaseURL = "https://complicated.taildbe095.ts.net:8443"
-    public var authCookie: String?
+    public var authCookie: String? {
+        get {
+            return UserDefaults.standard.string(forKey: "wearable_auth_cookie")
+        }
+        set {
+            if let val = newValue, !val.isEmpty {
+                UserDefaults.standard.set(val, forKey: "wearable_auth_cookie")
+            }
+        }
+    }
     public var currentConversationId: String?
 
     // 状态标志
@@ -69,7 +78,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var wasOtherAudioPlaying = false
     private var isSystemInterrupted = false
     private var interruptedDate: Date?
-    private var isPreparingToRecord = false
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -122,20 +130,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                     options: [.allowBluetoothA2DP, .defaultToSpeaker]
                 )
                 try session.setActive(true)
-
-                // 智能优先选定外部专业麦克风 (如大疆 DJI Mic USB-C / Lightning 接收器)
-                let availableInputs = session.availableInputs ?? []
-                print("[WearableService] 录音前可用输入端口: \(availableInputs.map { "\($0.portName)[\($0.portType.rawValue)]" })")
-                if let externalMic = availableInputs.first(where: { $0.portType == .usbAudio || $0.portType == .headsetMic }) {
-                    try? session.setPreferredInput(externalMic)
-                    print("[WearableService] 已优先选定外部专业麦克风: \(externalMic.portName)")
-                } else if let builtIn = availableInputs.first(where: { $0.portType == .builtInMic }) {
-                    if let frontSource = builtIn.dataSources?.first(where: { $0.orientation == .front }) {
-                        try? builtIn.setPreferredDataSource(frontSource)
-                    }
-                    try? session.setPreferredInput(builtIn)
-                    print("[WearableService] 已选定手机正面麦克风进行录音")
-                }
             } else {
                 // 纯 A2DP 待命模式：接收 MPRemoteCommandCenter 耳机实体按键
                 try session.setCategory(
@@ -475,11 +469,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 return
             }
 
-            // 2. 如果正在录音中或正在启动录音中 -> 再次按键：立即停止录音并发送给 Agent！
-            if self.isRecording || self.isPreparingToRecord {
+            // 2. 如果正在录音中 -> 再次按键：立即停止录音并发送给 Agent！
+            if self.isRecording {
                 let duration = Date().timeIntervalSince(self.recordingStartTime ?? Date())
-                // 核心防抖安全锁：录音启动 0.8 秒内绝对禁止立刻停止，杜绝按键物理弹跳/蓝牙双包导致瞬间一闪而过！
-                if self.isRecording && duration < 0.8 {
+                // 核心防抖安全锁：录音启动 0.6 秒内忽略连击抖动
+                if duration < 0.6 {
                     print("[WearableService] 录音启动仅 \(String(format: "%.2f", duration))s，忽略连击抖动")
                     return
                 }
@@ -494,8 +488,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 原生麦克风录音控制
     public func startRecording() {
-        guard !isRecording, !isPreparingToRecord else { return }
-        isPreparingToRecord = true
+        guard !isRecording else { return }
 
         // 核心安全重置：用户主动按键启动录音，彻底清除遗留的打断标记与发声标记
         isSystemInterrupted = false
@@ -510,10 +503,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         silentPlayer?.stop()
         silentPlayer = nil
 
-        // 触感反馈
+        // 触感反馈即时震动确认
         triggerFeedbackHaptic()
 
-        // 开启麦克风录音会话模式并选定外接专业麦克风 (如 DJI Mic)
+        // 开启麦克风录音会话模式 (纯 A2DP 高清录音，绝不切换 HFP，保留耳机远程控制)
         setupAudioSession(forRecording: true)
 
         let tempDir = NSTemporaryDirectory()
@@ -521,7 +514,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent(fileName)
         self.tempAudioFileURL = fileURL
 
-        // 标准 AAC 录音配置
+        // 标准 AAC 录音配置 (16kHz 单声道高清语音)
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 16000.0,
@@ -529,46 +522,34 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
 
-        // 播放提示音，并且在提示音播放完毕后(0.18s)再启动录音机！
-        // 彻底杜绝提示音结束重置 CoreAudio 时钟从而截断录音机（0.19s/0.57s 秒断）的致命问题！
-        playBeepStart()
+        do {
+            let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
+            recorder.delegate = self
+            recorder.isMeteringEnabled = true
+            recorder.prepareToRecord()
+            let recordOk = recorder.record()
+            self.audioRecorder = recorder
+            self.isRecording = true
+            self.recordingStartTime = Date()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
-            guard let self = self else { return }
-            self.isPreparingToRecord = false
-            guard self.isListening, !self.isRecording else { return }
+            startMaxDurationTimer()
 
-            do {
-                let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
-                recorder.delegate = self
-                recorder.isMeteringEnabled = true
-                recorder.prepareToRecord()
-                let recordOk = recorder.record()
-                self.audioRecorder = recorder
-                self.isRecording = true
-                self.recordingStartTime = Date()
-
-                self.startMaxDurationTimer()
-
-                self.updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
-                self.notifyStatusChanged()
-                print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
-            } catch {
-                print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
-                self.setupAudioSession(forRecording: false)
-                self.ensureSilentPlayerRunning()
-            }
+            updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
+            notifyStatusChanged()
+            print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
+        } catch {
+            print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
+            setupAudioSession(forRecording: false)
+            ensureSilentPlayerRunning()
         }
     }
 
     public func stopRecording(shouldProcess: Bool = true) {
-        isPreparingToRecord = false
         guard isRecording else { return }
 
         stopMaxDurationTimer()
 
-        // 立即触发确认结束音与震动
-        playBeepEnd()
+        // 立即触发确认结束震动
         triggerFeedbackHaptic()
 
         audioRecorder?.stop()
@@ -594,9 +575,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return
         }
 
-        // 核心安全防线：若录音不足 0.6 秒或数据不足 6KB，判定为无效误触或空语音，丢弃并不向 Agent 发送！
-        if duration < 0.6 || audioData.count < 6000 {
-            print("[WearableService] 录音过短或数据不足 (\(String(format: "%.2f", duration))s, \(audioData.count) 字节)，自动丢弃，不发送空语音")
+        // 仅拦截瞬间物理抖动（< 0.3s 或 < 500 字节的空文件）
+        if duration < 0.3 || audioData.count < 500 {
+            print("[WearableService] 录音过短或数据不足 (\(String(format: "%.2f", duration))s, \(audioData.count) 字节)，自动丢弃")
             updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             return
         }
