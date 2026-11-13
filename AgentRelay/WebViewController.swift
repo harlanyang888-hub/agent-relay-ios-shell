@@ -18,6 +18,19 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         setupWebView()
         setupIndicator()
         loadInitialURL()
+        let deviceTestButton = UIButton(type: .system)
+        deviceTestButton.setTitle("设备测试", for: .normal)
+        deviceTestButton.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.95)
+        deviceTestButton.layer.cornerRadius = 14
+        deviceTestButton.translatesAutoresizingMaskIntoConstraints = false
+        deviceTestButton.addTarget(self, action: #selector(openDeviceDiagnostics), for: .touchUpInside)
+        view.addSubview(deviceTestButton)
+        NSLayoutConstraint.activate([
+            deviceTestButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            deviceTestButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            deviceTestButton.widthAnchor.constraint(equalToConstant: 88),
+            deviceTestButton.heightAnchor.constraint(equalToConstant: 36)
+        ])
 
         // 关键保活与响应：进入 App 立即自动开启耳机监听，开箱即用无需网页手动开启
         WearableService.shared.startListening()
@@ -25,6 +38,12 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+    }
+
+    @objc private func openDeviceDiagnostics() {
+        let controller = UINavigationController(rootViewController: DeviceDiagnosticsViewController())
+        controller.modalPresentationStyle = .fullScreen
+        present(controller, animated: true)
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle {

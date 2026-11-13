@@ -8,6 +8,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var lastHandledTime: TimeInterval = 0
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        if launchOptions?[.bluetoothCentrals] != nil { _ = BLEProbe.shared }
+        DeviceDiagnostics.shared.log("App 启动 state=\(application.applicationState.rawValue)")
         window = UIWindow(frame: UIScreen.main.bounds)
 
         // 启动即刻拉起穿戴监听（.playback A2DP 模式）

@@ -75,6 +75,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
     private var maxDurationTimer: Timer?
+    private var recordingHealthTimer: Timer?
+    private var lastCapturedTime: TimeInterval = 0
+    private var lastCaptureProgressAt: TimeInterval = 0
     private var wasOtherAudioPlaying = false
     private var isSystemInterrupted = false
     private var interruptedDate: Date?
@@ -119,7 +122,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // MARK: - 音频会话设置 (纯 A2DP 协议，严禁 HFP 通话模式)
     // 待机状态使用 .playback 专属模式（A2DP 纯播放），这是 iOS 系统分发 MPRemoteCommandCenter 耳机实体按键的绝对必要前提！
     // 录音状态使用 .playAndRecord（严禁使用 .allowBluetooth，保证蓝牙耳机保持在 A2DP 纯音乐协议，杜绝切入 HFP 通话模式）
-    private func setupAudioSession(forRecording: Bool) {
+    @discardableResult
+    private func setupAudioSession(forRecording: Bool) -> Bool {
         let session = AVAudioSession.sharedInstance()
         do {
             if forRecording {
@@ -140,8 +144,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 try session.setActive(true)
             }
             print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording), 纯 A2DP 协议，无 HFP 通话)")
+            return true
         } catch {
             print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
+            return false
         }
     }
 
@@ -149,12 +155,18 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.updateAudioRouteInfo()
+            let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+            DeviceDiagnostics.shared.log("Audio route reason=\(reason) input=\(AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portName }) recording=\(self.isRecording)")
             self.notifyStatusChanged()
             // 核心修复：路由变更绝不可盲目重启播放器，杜绝微信点开麦克风时被静音播放器顶掉的问题！
         }
     }
 
     @objc private func handleAudioInterruption(notification: Notification) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.handleAudioInterruption(notification: notification) }
+            return
+        }
         guard let info = notification.userInfo,
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
@@ -162,19 +174,26 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
 
         if type == .began {
+            DeviceDiagnostics.shared.log("Audio interruption began recording=\(isRecording) captured=\(audioRecorder?.currentTime ?? 0)")
             print("[WearableService] 收到系统音频打断 (如微信录音、系统来电)，彻底让路，绝不强占麦克风")
             isSystemInterrupted = true
             interruptedDate = Date()
             wasOtherAudioPlaying = true
             silentPlayer?.stop()
             silentPlayer = nil
+            if isRecording {
+                failActiveRecording(message: "录音被系统中断，未发送，请重新录音")
+            }
         } else if type == .ended {
+            let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
+            DeviceDiagnostics.shared.log("Audio interruption ended shouldResume=\(shouldResume)")
             print("[WearableService] 系统音频打断结束，解除打断并恢复耳机待命焦点")
             isSystemInterrupted = false
             interruptedDate = nil
             wasOtherAudioPlaying = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self = self, self.isListening, !self.isRecording else { return }
+                guard let self = self, shouldResume, self.isListening, !self.isRecording else { return }
                 self.reactivateStandby()
             }
         }
@@ -266,17 +285,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
             // 核心安全三道锁：系统打断中、外部音频独占中(如微信录音)、其他音频发声中，绝不强占会话！
             if self.isSystemInterrupted {
-                // 自愈机制：如果微信等三方 App 录音结束未发 .ended，且当前无声已超过 3.0 秒，自动解除打断
-                if !session.secondaryAudioShouldBeSilencedHint && !session.isOtherAudioPlaying {
-                    if let interruptedTime = self.interruptedDate, Date().timeIntervalSince(interruptedTime) > 3.0 {
-                        print("[WearableService] 外部音频打断已安静超过 3 秒，自愈恢复待命")
-                        self.isSystemInterrupted = false
-                        self.interruptedDate = nil
-                        self.wasOtherAudioPlaying = false
-                        self.reactivateStandby()
-                        return
-                    }
-                }
+                // 无声不能证明微信或电话已经释放麦克风，等待系统中断结束。
                 self.wasOtherAudioPlaying = true
                 return
             }
@@ -439,6 +448,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 实体按键核心流转：按一下开始录音，再按一下立刻发出音频
     public func handleHardwareButtonPress(name: String) {
+        DeviceDiagnostics.shared.log("Button \(name) recording=\(isRecording) state=\(UIApplication.shared.applicationState.rawValue)")
         // 关键安全守卫：如果监听未开启，100% 忽略按键，绝不自动重启监听或发送消息
         guard isListening else {
             print("[WearableService] 监听未开启，忽略外部按键: \(name)")
@@ -489,10 +499,32 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // MARK: - 原生麦克风录音控制
     public func startRecording() {
         guard !isRecording else { return }
+        guard !isSystemInterrupted else {
+            updateNowPlayingInfo(statusText: "麦克风被系统占用，请结束通话或录音后重试")
+            DeviceDiagnostics.shared.log("Record start rejected: audio interruption active")
+            return
+        }
 
-        // 核心安全重置：用户主动按键启动录音，彻底清除遗留的打断标记与发声标记
-        isSystemInterrupted = false
-        interruptedDate = nil
+        let session = AVAudioSession.sharedInstance()
+        guard session.recordPermission == .granted else {
+            if session.recordPermission == .undetermined,
+               UIApplication.shared.applicationState == .active {
+                session.requestRecordPermission { [weak self] granted in
+                    DispatchQueue.main.async {
+                        self?.updateNowPlayingInfo(statusText: granted
+                            ? "麦克风已授权，请再次按键录音"
+                            : "录音失败：请在设置中允许麦克风权限")
+                        self?.notifyStatusChanged()
+                    }
+                }
+            } else {
+                updateNowPlayingInfo(statusText: "录音失败：请打开 App 检查麦克风权限")
+                notifyStatusChanged()
+            }
+            return
+        }
+
+        // 显式按键启动录音，不通过看门狗强占其他应用的音频会话。
         wasOtherAudioPlaying = false
 
         // 停止之前的播放与旧的轮询
@@ -503,14 +535,18 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         silentPlayer?.stop()
         silentPlayer = nil
 
-        // 触感反馈即时震动确认
-        triggerFeedbackHaptic()
-
         // 开启麦克风录音会话模式 (纯 A2DP 高清录音，绝不切换 HFP，保留耳机远程控制)
-        setupAudioSession(forRecording: true)
+        guard setupAudioSession(forRecording: true) else {
+            recoverFromRecordingStartFailure(message: "录音失败：当前无法启用麦克风")
+            return
+        }
+        let inputDescription = session.currentRoute.inputs
+            .map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", ")
+        print("[WearableService] 录音输入=\(inputDescription), appState=\(UIApplication.shared.applicationState.rawValue)")
+        DeviceDiagnostics.shared.log("Record input=\(inputDescription) state=\(UIApplication.shared.applicationState.rawValue)")
 
         let tempDir = NSTemporaryDirectory()
-        let fileName = "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a"
+        let fileName = "wearable_voice_\(UUID().uuidString).m4a"
         let fileURL = URL(fileURLWithPath: tempDir).appendingPathComponent(fileName)
         self.tempAudioFileURL = fileURL
 
@@ -526,32 +562,53 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
             recorder.delegate = self
             recorder.isMeteringEnabled = true
-            recorder.prepareToRecord()
-            let recordOk = recorder.record()
+            guard recorder.prepareToRecord(), recorder.record(), recorder.isRecording else {
+                recorder.stop()
+                recoverFromRecordingStartFailure(message: "录音启动失败，请打开 App 重试")
+                return
+            }
             self.audioRecorder = recorder
             self.isRecording = true
             self.recordingStartTime = Date()
 
             startMaxDurationTimer()
+            startRecordingHealthMonitor()
 
             updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
             notifyStatusChanged()
-            print("[WearableService] 录音已开始: \(fileURL.path), recordOk=\(recordOk)")
+            print("[WearableService] 录音已开始: \(fileURL.path), recording=\(recorder.isRecording)")
+            DeviceDiagnostics.shared.log("Record started file=\(fileURL.lastPathComponent)")
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
-            setupAudioSession(forRecording: false)
-            ensureSilentPlayerRunning()
+            DeviceDiagnostics.shared.log("Record creation error=\(error)")
+            recoverFromRecordingStartFailure(message: "录音创建失败，请打开 App 重试")
         }
+    }
+
+    private func recoverFromRecordingStartFailure(message: String) {
+        DeviceDiagnostics.shared.log(message)
+        stopMaxDurationTimer()
+        audioRecorder = nil
+        isRecording = false
+        recordingStartTime = nil
+        if let fileURL = tempAudioFileURL {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        tempAudioFileURL = nil
+        if isListening { reactivateStandby() }
+        updateNowPlayingInfo(statusText: message)
+        notifyStatusChanged()
     }
 
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
 
         stopMaxDurationTimer()
+        recordingHealthTimer?.invalidate()
+        recordingHealthTimer = nil
 
-        // 立即触发确认结束震动
-        triggerFeedbackHaptic()
-
+        let capturedDuration = audioRecorder?.currentTime ?? 0
+        let wallDuration = Date().timeIntervalSince(recordingStartTime ?? Date())
         audioRecorder?.stop()
         audioRecorder = nil
         isRecording = false
@@ -561,10 +618,55 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         setupAudioSession(forRecording: false)
         ensureSilentPlayerRunning()
 
-        let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
+        let duration = capturedDuration
+        DeviceDiagnostics.shared.log("Record stopped captured=\(duration) wall=\(wallDuration) process=\(shouldProcess)")
+        recordingStartTime = nil
         updateNowPlayingInfo(statusText: "🟡 正在发送给 Agent...")
 
         guard shouldProcess, let fileURL = tempAudioFileURL, FileManager.default.fileExists(atPath: fileURL.path) else {
+            return
+        }
+        guard wallDuration < 2 || capturedDuration >= wallDuration - 1.5 else {
+            updateNowPlayingInfo(statusText: "录音发生截断，未发送，请重新录音")
+            DeviceDiagnostics.shared.log("Record rejected: capture duration does not match elapsed time")
+            return
+        }
+
+        // 文件头也可能超过大小阈值，提交前确认存在音频帧。
+        guard let recordedFile = try? AVAudioFile(forReading: fileURL), recordedFile.length > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: recordedFile.processingFormat, frameCapacity: 4096) else {
+            print("[WearableService] 录音文件无有效音频帧，跳过提交")
+            updateNowPlayingInfo(statusText: "录音无效，未发送，请重新录音")
+            return
+        }
+        var peak: Float = 0
+        do {
+            while recordedFile.framePosition < recordedFile.length {
+                try recordedFile.read(into: buffer)
+                guard buffer.frameLength > 0, let channels = buffer.floatChannelData else {
+                    updateNowPlayingInfo(statusText: "录音无效，未发送，请重新录音")
+                    return
+                }
+                for channel in 0..<Int(buffer.format.channelCount) {
+                    for frame in 0..<Int(buffer.frameLength) {
+                        peak = max(peak, abs(channels[channel][frame]))
+                    }
+                }
+            }
+        } catch {
+            print("[WearableService] 录音无法解码，跳过提交: \(error)")
+            updateNowPlayingInfo(statusText: "录音损坏，未发送，请重新录音")
+            return
+        }
+        let fileDuration = Double(recordedFile.length) / recordedFile.processingFormat.sampleRate
+        DeviceDiagnostics.shared.log("Record decoded fileDuration=\(fileDuration) frames=\(recordedFile.length) peak=\(peak)")
+        guard peak > 0.00003 else {
+            updateNowPlayingInfo(statusText: "未采集到声音，未发送，请检查麦克风后重试")
+            DeviceDiagnostics.shared.log("Record rejected: silent decoded audio")
+            return
+        }
+        guard fileDuration >= 0.3, abs(fileDuration - capturedDuration) < 1.5 else {
+            updateNowPlayingInfo(statusText: "录音文件时长异常，未发送，请重新录音")
             return
         }
 
@@ -640,6 +742,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             guard let self = self else { return }
 
             if let error = error {
+                DeviceDiagnostics.shared.log("Voice upload failed: \(error.localizedDescription)")
                 print("[WearableService] 语音上传网络失败: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.updateNowPlayingInfo(statusText: "❌ 发送失败，请检查网络")
@@ -649,6 +752,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode), let data = data else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                DeviceDiagnostics.shared.log("Voice upload HTTP=\(code)")
                 print("[WearableService] 语音上传 HTTP 错误: \(code)")
                 DispatchQueue.main.async {
                     self.updateNowPlayingInfo(statusText: "❌ 服务器返回 \(code)")
@@ -783,6 +887,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 语音流播放
     private func playAudioStreamData(data: Data) {
+        guard !isRecording, !isSystemInterrupted else {
+            DeviceDiagnostics.shared.log("Playback deferred/dropped while recording or interrupted")
+            return
+        }
         stopAudioPlayback()
 
         do {
@@ -848,11 +956,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 声学与触感反馈辅助
     public func triggerFeedbackHaptic() {
-        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        // 系统震动服务可能与音频会话竞争；录音期间也不触发触感。
+        guard !isRecording else { return }
         feedbackGenerator.impactOccurred()
     }
 
     public func playBeepStart() {
+        guard !isSystemInterrupted else { return }
         beepStartPlayer?.currentTime = 0
         beepStartPlayer?.play()
     }
@@ -957,9 +1067,56 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // MARK: - AVAudioRecorderDelegate
     public func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         print("[WearableService] audioRecorderDidFinishRecording: successfully=\(flag)")
+        guard recorder === audioRecorder, isRecording else { return }
+        failActiveRecording(message: "录音意外停止，未发送，请重新录音")
     }
 
     public func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         print("[WearableService] audioRecorderEncodeErrorDidOccur: \(String(describing: error))")
+        DeviceDiagnostics.shared.log("Record encoding error=\(String(describing: error))")
+        guard recorder === audioRecorder, isRecording else { return }
+        failActiveRecording(message: "录音编码失败，未发送，请重新录音")
+    }
+
+    private func startRecordingHealthMonitor() {
+        recordingHealthTimer?.invalidate()
+        lastCapturedTime = 0
+        lastCaptureProgressAt = ProcessInfo.processInfo.systemUptime
+        var confirmed = false
+        recordingHealthTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording, let recorder = self.audioRecorder else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            let captured = recorder.currentTime
+            if captured > self.lastCapturedTime + 0.01 {
+                self.lastCapturedTime = captured
+                self.lastCaptureProgressAt = now
+                if !confirmed, captured >= 0.25 {
+                    confirmed = true
+                    recorder.updateMeters()
+                    DeviceDiagnostics.shared.log("Record capture confirmed time=\(captured) peakDB=\(recorder.peakPower(forChannel: 0))")
+                    self.playBeepStart()
+                }
+            }
+            if !recorder.isRecording || now - self.lastCaptureProgressAt > 1.25 {
+                DeviceDiagnostics.shared.log("Record stalled isRecording=\(recorder.isRecording) captured=\(captured)")
+                self.failActiveRecording(message: "麦克风采集中断，未发送，请重新录音")
+            }
+        }
+    }
+
+    private func failActiveRecording(message: String) {
+        guard isRecording else { return }
+        recordingHealthTimer?.invalidate()
+        recordingHealthTimer = nil
+        stopMaxDurationTimer()
+        isRecording = false
+        let recorder = audioRecorder
+        audioRecorder = nil
+        recorder?.stop()
+        recordingStartTime = nil
+        DeviceDiagnostics.shared.log(message)
+        if isListening, !isSystemInterrupted { reactivateStandby() }
+        updateNowPlayingInfo(statusText: message)
+        notifyStatusChanged()
     }
 }
