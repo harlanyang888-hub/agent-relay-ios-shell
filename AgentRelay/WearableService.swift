@@ -844,6 +844,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             print("[WearableService] 语音已成功送达网关！")
             // 播放轻快上升音：提示已发送成功
             self.playBeepStart()
+            self.updateNowPlayingInfo(statusText: "已发送给 Agent，录音已保存在 Recordings")
 
             // 解析返回的全新 conversationId 用于轮询该会话的 Agent 回复，轮询完毕朗读到耳机
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -975,6 +976,12 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         stopAudioPlayback()
 
         do {
+            if !isListening {
+                // 快捷录音结束后的播报只启用输出，不重新启用麦克风。
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+                try session.setActive(true)
+            }
             speechPlayer = try AVAudioPlayer(data: data)
             speechPlayer?.delegate = self
             speechPlayer?.prepareToPlay()
@@ -1009,6 +1016,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             speechPlayer?.stop()
             speechPlayer = nil
             isPlayingAudio = false
+            if !isListening && !isRecording {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
             updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             delegate?.wearableServiceDidFinishPlayback()
             print("[WearableService] 语音播报已停止")
@@ -1026,6 +1036,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         } else if player == speechPlayer {
             isPlayingAudio = false
             speechPlayer = nil
+            if !isListening && !isRecording {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
             updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             delegate?.wearableServiceDidFinishPlayback()
             print("[WearableService] 语音播报完毕")
@@ -1043,6 +1056,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func playBeepStart() {
+        guard isListening || isRecording else { return }
         guard !isSystemInterrupted else { return }
         beepStartPlayer?.currentTime = 0
         beepStartPlayer?.play()
