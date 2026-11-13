@@ -67,6 +67,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var keepaliveWatchdogTimer: Timer?
     private var maxDurationTimer: Timer?
     private var wasOtherAudioPlaying = false
+    private var isSystemInterrupted = false
 
     // 防抖与安全锁
     private var lastButtonTime: TimeInterval = 0
@@ -138,8 +139,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             guard let self = self else { return }
             self.updateAudioRouteInfo()
             self.notifyStatusChanged()
-            // 路由变更后保证静音保活持续
-            if self.isListening || self.isRecording {
+            // 核心修复：录音期间严禁启动静音底噪播放器，避免采样率冲突强行中断录音！
+            if self.isListening && !self.isRecording {
                 self.ensureSilentPlayerRunning()
             }
         }
@@ -153,14 +154,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
 
         if type == .began {
-            print("[WearableService] 收到系统音频打断 (如普通电话呼入)，底噪暂停让路")
+            print("[WearableService] 收到系统音频打断 (如微信录音、系统来电)，彻底让路，绝不强占麦克风")
+            isSystemInterrupted = true
             wasOtherAudioPlaying = true
             silentPlayer?.pause()
         } else if type == .ended {
-            print("[WearableService] 系统音频打断结束，自动重新激活音频会话并夺回按键焦点")
+            print("[WearableService] 系统音频打断结束，解除打断并恢复耳机待命焦点")
+            isSystemInterrupted = false
             wasOtherAudioPlaying = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self = self, self.isListening else { return }
+                guard let self = self, self.isListening, !self.isRecording else { return }
                 self.reactivateStandby()
             }
         }
@@ -179,7 +182,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         } else if type == .end {
             print("[WearableService] 其他 App 停止发声，自动重置耳机按键焦点")
             wasOtherAudioPlaying = false
-            if isListening && !isRecording && !isPlayingAudio {
+            if isListening && !isRecording && !isPlayingAudio && !isSystemInterrupted {
                 reactivateStandby()
             }
         }
@@ -217,6 +220,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 保持静音底噪播放 (后台保活与实体按键捕获的生命线)
     private func ensureSilentPlayerRunning() {
+        // 关键守卫：录音或播报期间绝不运行静音底噪播放器
+        guard !isRecording && !isPlayingAudio else { return }
         if silentPlayer == nil || !(silentPlayer?.isPlaying ?? false) {
             do {
                 let silentData = generateSilentWAV()
@@ -235,13 +240,18 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     private func startKeepaliveWatchdog() {
         keepaliveWatchdogTimer?.invalidate()
-        keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isListening, !self.isRecording, !self.isPlayingAudio else { return }
+
+            // 核心安全原则：系统打断中（如微信正在录音语音条）绝对禁止强夺会话，彻底解决微信麦克风被占问题！
+            if self.isSystemInterrupted {
+                return
+            }
 
             let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
             if isOtherPlaying {
                 self.wasOtherAudioPlaying = true
-                // 其他 App 正在发声（音乐、微信语音等），礼貌让路，避免干扰
+                // 其他 App 正在发声（音乐等），礼貌让路
                 return
             }
 
@@ -447,6 +457,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         stopAudioPlayback()
         stopPolling()
 
+        // 核心修复：录音启动时彻底停止并释放静音保活播放器！录音机本身就是最高优先级的后台保活源，绝对不可在录音时播放底噪！
+        silentPlayer?.stop()
+        silentPlayer = nil
+
         // 触感反馈 + 清脆高音提示音
         triggerFeedbackHaptic()
         playBeepStart()
@@ -477,9 +491,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             self.isRecording = true
             self.recordingStartTime = Date()
 
-            // 保持静音底噪保活
-            ensureSilentPlayerRunning()
-
             startMaxDurationTimer()
 
             updateNowPlayingInfo(statusText: "🔴 正在录音... (单击按键结束并发送)")
@@ -488,6 +499,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         } catch {
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
             setupAudioSession(forRecording: false)
+            ensureSilentPlayerRunning()
         }
     }
 
@@ -887,5 +899,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private func stopMaxDurationTimer() {
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+    }
+
+    // MARK: - AVAudioRecorderDelegate
+    public func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        print("[WearableService] audioRecorderDidFinishRecording: successfully=\(flag)")
+    }
+
+    public func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        print("[WearableService] audioRecorderEncodeErrorDidOccur: \(String(describing: error))")
     }
 }
