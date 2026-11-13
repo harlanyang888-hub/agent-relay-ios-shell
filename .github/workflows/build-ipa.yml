@@ -16,6 +16,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Check BLE comparison and trial capture
+        run: |
+          swiftc AgentRelay/BLEButtonTrial.swift tests/main.swift -o /tmp/agent-relay-ble-checks
+          /tmp/agent-relay-ble-checks
+
       - name: Build unsigned .app
         run: |
           xcodebuild -project AgentRelay.xcodeproj \

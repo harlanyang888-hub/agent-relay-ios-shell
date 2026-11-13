@@ -41,9 +41,16 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private(set) var signals: [UUID: Int] = [:]
     private var lastRefreshAt: TimeInterval = 0
     private var selected: CBPeripheral?
+    private var notificationsReady = false
+    private var lastValueLog: [String: (String, TimeInterval)] = [:]
     private var scanningRequested = false
     private var scanTimeout: Timer?
     var onChange: (() -> Void)?
+    var canRunButtonTrial: Bool { selected?.state == .connected && notificationsReady }
+    var connectionDescription: String {
+        guard let peripheral = selected else { return "尚未连接设备" }
+        return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")"
+    }
 
     private override init() {
         super.init()
@@ -79,6 +86,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func connect(_ peripheral: CBPeripheral) {
         stopScan()
+        if selected?.identifier == peripheral.identifier, peripheral.state == .connected || peripheral.state == .connecting { return }
+        BLEButtonTrial.shared.finish(reason: "更换或重新连接设备")
+        notificationsReady = false
+        lastValueLog.removeAll()
         if let previous = selected, previous.identifier != peripheral.identifier {
             central.cancelPeripheralConnection(previous)
         }
@@ -89,8 +100,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func disconnect() {
-        if let peripheral = selected { central.cancelPeripheralConnection(peripheral) }
+        guard let peripheral = selected else { return }
+        BLEButtonTrial.shared.finish(reason: "用户断开连接")
+        central.cancelPeripheralConnection(peripheral)
         selected = nil
+        notificationsReady = false
         DeviceDiagnostics.shared.log("BLE 已请求断开")
     }
 
@@ -142,6 +156,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if peripheral.identifier == selected?.identifier {
+            notificationsReady = false
+            BLEButtonTrial.shared.event("DISCONNECT error=\(String(describing: error))")
+            BLEButtonTrial.shared.finish(reason: "设备断开，采样未完成")
+        }
         DeviceDiagnostics.shared.log("BLE 断开 \(peripheral.identifier) error=\(String(describing: error))")
     }
 
@@ -165,10 +184,25 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if peripheral.identifier == selected?.identifier, characteristic.uuid == CBUUID(string: "FFF4") {
+            notificationsReady = characteristic.isNotifying && error == nil
+        }
         DeviceDiagnostics.shared.log("BLE 订阅 \(characteristic.uuid) enabled=\(characteristic.isNotifying) error=\(String(describing: error))")
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral.identifier == selected?.identifier else { return }
+        let service = characteristic.service?.uuid.uuidString ?? "?"
+        let data = characteristic.value ?? Data()
+        BLEButtonTrial.shared.packet(service: service, characteristic: characteristic.uuid.uuidString, data: data, error: error)
+        let key = service + "/" + characteristic.uuid.uuidString
+        let now = ProcessInfo.processInfo.systemUptime
+        if error == nil, let fingerprint = BLEFrameComparison.fingerprint(data) {
+            let summaryKey = key + ":" + fingerprint
+            if let previous = lastValueLog[summaryKey], now - previous.1 < 5 { return }
+            if lastValueLog.count > 128 { lastValueLog.removeAll() }
+            lastValueLog[summaryKey] = (fingerprint, now)
+        }
         let hex = (characteristic.value ?? Data()).prefix(64).map { String(format: "%02x", $0) }.joined()
         DeviceDiagnostics.shared.log("BLE VALUE \(characteristic.service?.uuid.uuidString ?? "?")/\(characteristic.uuid) hex=\(hex) error=\(String(describing: error))")
     }
@@ -178,6 +212,9 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     private let table = UITableView()
     private let logView = UITextView()
     private let recordButton = UIButton(type: .system)
+    private let trialButton = UIButton(type: .system)
+    private let trialLabel = UILabel()
+    private var lastTrialPhase = -1
     private var refreshTimer: Timer?
 
     override func viewDidLoad() {
@@ -197,15 +234,27 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         recordButton.addTarget(self, action: #selector(toggleRecording), for: .touchUpInside)
         let controls = UIStackView(arrangedSubviews: [scan, disconnect, copy])
         controls.distribution = .fillEqually
+        trialButton.setTitle("开始 44 秒大疆按键采样", for: .normal)
+        trialButton.addTarget(self, action: #selector(toggleButtonTrial), for: .touchUpInside)
+        let mark = UIButton(type: .system)
+        mark.setTitle("标记：刚按了麦克风实体键", for: .normal)
+        mark.addTarget(self, action: #selector(markPhysicalButton), for: .touchUpInside)
+        let export = UIButton(type: .system)
+        export.setTitle("复制按键采样报告", for: .normal)
+        export.addTarget(self, action: #selector(copyTrial), for: .touchUpInside)
+        let trialActions = UIStackView(arrangedSubviews: [mark, export])
+        trialActions.distribution = .fillEqually
+        trialLabel.numberOfLines = 0
+        trialLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         let help = UILabel()
-        help.text = "BLE 仅观测：只显示附近强信号设备。把防丢器放在手机旁，移动它观察 RSSI，再点选连接。RSSI 越接近 0 信号越强。录音测试会发送给 Agent。"
+        help.text = "先连接 DJI Mic Mini 2，通知就绪后开始采样。按屏幕提示操作实体键，每阶段只操作一次，再点标记。采样不录音、不写入麦克风设置。下方录音测试仍会发送给 Agent。"
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
         table.delegate = self
         logView.isEditable = false
         logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        let stack = UIStackView(arrangedSubviews: [controls, recordButton, help, table, logView])
+        let stack = UIStackView(arrangedSubviews: [controls, help, trialButton, trialLabel, trialActions, recordButton, table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -217,7 +266,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             controls.heightAnchor.constraint(equalToConstant: 40),
             recordButton.heightAnchor.constraint(equalToConstant: 40),
-            table.heightAnchor.constraint(equalTo: stack.heightAnchor, multiplier: 0.25)
+            table.heightAnchor.constraint(equalTo: stack.heightAnchor, multiplier: 0.18)
         ])
         BLEProbe.shared.onChange = { [weak self] in self?.table.reloadData() }
         DeviceDiagnostics.shared.onChange = { [weak self] in self?.refresh() }
@@ -226,6 +275,20 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
 
     private func refresh() {
+        let trial = BLEButtonTrial.shared
+        trial.advance()
+        if trial.active {
+            trialLabel.text = "第 \(trial.elapsed) / 44 秒：\(trial.instruction)"
+            trialLabel.textColor = trial.phase == 0 || trial.phase == 6 ? .secondaryLabel : .systemOrange
+            if trial.phase != lastTrialPhase {
+                lastTrialPhase = trial.phase
+                if trial.phase > 0, trial.phase < 6 { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+            }
+        } else {
+            trialLabel.text = BLEProbe.shared.connectionDescription + "\n采样结束后点「复制按键采样报告」"
+            trialLabel.textColor = .label
+        }
+        trialButton.setTitle(trial.active ? "停止采样并生成报告" : "开始 44 秒大疆按键采样", for: .normal)
         let text = DeviceDiagnostics.shared.text
         if logView.text != text {
             logView.text = text
@@ -237,12 +300,31 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     @objc private func scanBLE() { BLEProbe.shared.scan() }
     @objc private func disconnectBLE() { BLEProbe.shared.disconnect() }
     @objc private func copyLog() { UIPasteboard.general.string = DeviceDiagnostics.shared.text }
+    @objc private func toggleButtonTrial() {
+        if BLEButtonTrial.shared.active { BLEButtonTrial.shared.finish(reason: "用户提前结束") }
+        else if BLEProbe.shared.canRunButtonTrial {
+            lastTrialPhase = -1
+            BLEButtonTrial.shared.start(device: BLEProbe.shared.connectionDescription)
+        } else {
+            let alert = UIAlertController(title: "先连接大疆麦克风", message: "扫描并点选 DJI Mic Mini 2，等待显示通知已就绪。", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "知道了", style: .default))
+            present(alert, animated: true)
+        }
+        refresh()
+    }
+    @objc private func markPhysicalButton() { BLEButtonTrial.shared.mark(); refresh() }
+    @objc private func copyTrial() {
+        if BLEButtonTrial.shared.active { BLEButtonTrial.shared.finish(reason: "用户导出时结束") }
+        UIPasteboard.general.string = (DeviceDiagnostics.shared.text.components(separatedBy: "\n").first ?? "Agent Relay") + "\n" + BLEButtonTrial.shared.lastReport
+        refresh()
+    }
     @objc private func toggleRecording() {
         if WearableService.shared.isRecording { WearableService.shared.stopRecording() }
         else { WearableService.shared.startRecording() }
         refresh()
     }
     @objc private func close() {
+        BLEButtonTrial.shared.finish(reason: "关闭测试页")
         BLEProbe.shared.stopScan()
         refreshTimer?.invalidate()
         DeviceDiagnostics.shared.onChange = nil

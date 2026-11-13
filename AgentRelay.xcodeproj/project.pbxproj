@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		11000008 /* BLEButtonTrial.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000008 /* BLEButtonTrial.swift */; };
 		11000007 /* DeviceDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000007 /* DeviceDiagnostics.swift */; };
 		11000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000001 /* AppDelegate.swift */; };
 		11000002 /* WebViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000002 /* WebViewController.swift */; };
@@ -40,6 +41,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		21000008 /* BLEButtonTrial.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEButtonTrial.swift; sourceTree = "<group>"; };
 		21000007 /* DeviceDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDiagnostics.swift; sourceTree = "<group>"; };
 		01000001 /* AgentRelay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentRelay.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		01000002 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -85,6 +87,7 @@
 				21000002 /* WebViewController.swift */,
 				21000006 /* WearableService.swift */,
 				21000007 /* DeviceDiagnostics.swift */,
+				21000008 /* BLEButtonTrial.swift */,
 				21000003 /* Info.plist */,
 			);
 			path = AgentRelay;
@@ -210,6 +213,7 @@
 				11000002 /* WebViewController.swift in Sources */,
 				11000005 /* WearableService.swift in Sources */,
 				11000007 /* DeviceDiagnostics.swift in Sources */,
+				11000008 /* BLEButtonTrial.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
