@@ -127,7 +127,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                     options: [.allowBluetoothA2DP]
                 )
             }
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            try session.setActive(true)
             print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording), 纯 A2DP 协议，无 HFP 通话)")
         } catch {
             print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
@@ -139,10 +139,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             guard let self = self else { return }
             self.updateAudioRouteInfo()
             self.notifyStatusChanged()
-            // 核心修复：录音期间严禁启动静音底噪播放器，避免采样率冲突强行中断录音！
-            if self.isListening && !self.isRecording {
-                self.ensureSilentPlayerRunning()
-            }
+            // 核心修复：路由变更绝不可盲目重启播放器，杜绝微信点开麦克风时被静音播放器顶掉的问题！
         }
     }
 
@@ -157,12 +154,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             print("[WearableService] 收到系统音频打断 (如微信录音、系统来电)，彻底让路，绝不强占麦克风")
             isSystemInterrupted = true
             wasOtherAudioPlaying = true
-            silentPlayer?.pause()
+            silentPlayer?.stop()
+            silentPlayer = nil
         } else if type == .ended {
             print("[WearableService] 系统音频打断结束，解除打断并恢复耳机待命焦点")
             isSystemInterrupted = false
             wasOtherAudioPlaying = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self = self, self.isListening, !self.isRecording else { return }
                 self.reactivateStandby()
             }
@@ -177,13 +175,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
 
         if type == .begin {
-            print("[WearableService] 其他 App 开始发声 (标记让路)")
+            print("[WearableService] 其他 App 开始发声或占用麦克风 (标记让路)")
             wasOtherAudioPlaying = true
+            silentPlayer?.stop()
+            silentPlayer = nil
         } else if type == .end {
-            print("[WearableService] 其他 App 停止发声，自动重置耳机按键焦点")
+            print("[WearableService] 其他 App 停止发声或释放麦克风，自动重置耳机按键焦点")
             wasOtherAudioPlaying = false
-            if isListening && !isRecording && !isPlayingAudio && !isSystemInterrupted {
-                reactivateStandby()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self, self.isListening, !self.isRecording, !self.isPlayingAudio, !self.isSystemInterrupted else { return }
+                self.reactivateStandby()
             }
         }
     }
@@ -220,8 +221,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 保持静音底噪播放 (后台保活与实体按键捕获的生命线)
     private func ensureSilentPlayerRunning() {
-        // 关键守卫：录音或播报期间绝不运行静音底噪播放器
-        guard !isRecording && !isPlayingAudio else { return }
+        // 关键守卫：录音、播报、或系统被微信/电话打断期间，绝不运行静音底噪播放器
+        guard !isRecording && !isPlayingAudio && !isSystemInterrupted else { return }
+        let session = AVAudioSession.sharedInstance()
+        if session.secondaryAudioShouldBeSilencedHint || session.isOtherAudioPlaying {
+            print("[WearableService] 检测到外部音频使用中 (如微信录音或音乐播放)，静音播放器礼貌让路")
+            return
+        }
         if silentPlayer == nil || !(silentPlayer?.isPlaying ?? false) {
             do {
                 let silentData = generateSilentWAV()
@@ -243,19 +249,20 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         keepaliveWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isListening, !self.isRecording, !self.isPlayingAudio else { return }
 
-            // 核心安全原则：系统打断中（如微信正在录音语音条）绝对禁止强夺会话，彻底解决微信麦克风被占问题！
-            if self.isSystemInterrupted {
-                return
-            }
+            let session = AVAudioSession.sharedInstance()
 
-            let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-            if isOtherPlaying {
+            // 核心安全三道锁：系统打断中、外部音频独占中(如微信录音)、其他音频发声中，绝不强占会话！
+            if self.isSystemInterrupted || session.secondaryAudioShouldBeSilencedHint {
                 self.wasOtherAudioPlaying = true
-                // 其他 App 正在发声（音乐等），礼貌让路
                 return
             }
 
-            // 当其他音频停止发声 (wasOtherAudioPlaying 从 true 变为 false)
+            if session.isOtherAudioPlaying {
+                self.wasOtherAudioPlaying = true
+                return
+            }
+
+            // 当其他音频停止发声/录音 (wasOtherAudioPlaying 从 true 变为 false)
             // 或者保活播放器由于任何原因未运行，自动重新激活会话并夺回耳机待命控制权
             if self.wasOtherAudioPlaying || self.silentPlayer == nil || !(self.silentPlayer?.isPlaying ?? false) {
                 print("[WearableService] 看门狗：其他音频已停止或保活中断，无缝重新激活会话并夺回耳机实体键")
@@ -271,7 +278,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func reactivateStandby() {
-        guard isListening, !isRecording, !isPlayingAudio else { return }
+        guard isListening, !isRecording, !isPlayingAudio, !isSystemInterrupted else { return }
+        let session = AVAudioSession.sharedInstance()
+        if session.secondaryAudioShouldBeSilencedHint || session.isOtherAudioPlaying {
+            print("[WearableService] 外部音频使用中 (如微信录音或音乐播放)，礼貌让路，跳过 reactivateStandby")
+            wasOtherAudioPlaying = true
+            return
+        }
         setupAudioSession(forRecording: false)
         registerRemoteCommands()
         updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
@@ -779,8 +792,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         if player == silentPlayer {
-            if isListening || isRecording {
-                silentPlayer?.play()
+            if isListening && !isRecording && !isPlayingAudio && !isSystemInterrupted {
+                let session = AVAudioSession.sharedInstance()
+                if !session.secondaryAudioShouldBeSilencedHint && !session.isOtherAudioPlaying {
+                    silentPlayer?.play()
+                }
             }
         } else if player == speechPlayer {
             isPlayingAudio = false
@@ -788,6 +804,9 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             updateNowPlayingInfo(statusText: "🟢 耳机待命 (单击按键说话)")
             delegate?.wearableServiceDidFinishPlayback()
             print("[WearableService] 语音播报完毕")
+            if isListening && !isRecording && !isSystemInterrupted {
+                reactivateStandby()
+            }
         }
     }
 
