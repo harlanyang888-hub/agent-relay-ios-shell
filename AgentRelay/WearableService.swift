@@ -66,6 +66,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var shortcutDestination: [String: String] = [:]
     // 系统语音会话测试：激活/停用交由 LiveCommunicationKit 管理。
     public private(set) var communicationMode = false
+    public func communicationAudioDidActivate() {
+        guard communicationMode else { return }
+        isSystemInterrupted = false
+        interruptedDate = nil
+    }
     public var communicationConversationId: String?
     public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false

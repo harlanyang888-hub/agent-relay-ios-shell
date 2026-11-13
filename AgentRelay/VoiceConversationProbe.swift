@@ -317,6 +317,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             guard manager === self.manager, self.callUUID != nil else { return }
             self.audioActive = true
             self.paused = false
+            WearableService.shared.communicationAudioDidActivate()
             self.log("系统已启用音频会话")
             self.beginRecordingIfNeeded()
             self.playPendingReply()
