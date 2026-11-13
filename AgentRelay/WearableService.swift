@@ -66,6 +66,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var shortcutDestination: [String: String] = [:]
     // 系统语音会话测试：激活/停用交由 LiveCommunicationKit 管理。
     public private(set) var communicationMode = false
+    public var communicationButtonHandler: ((String) -> Void)?
     public func communicationAudioDidActivate() {
         guard communicationMode else { return }
         isSystemInterrupted = false
@@ -434,14 +435,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
 
         // 5. 耳机双击（下一首）
-        commandCenter.nextTrackCommand.isEnabled = true
+        commandCenter.nextTrackCommand.isEnabled = !communicationMode
         commandCenter.nextTrackCommand.addTarget { _ in
             WearableEventDispatcher.shared.dispatchButton(name: "nextTrack")
             return .success
         }
 
         // 6. 耳机三击（上一首）
-        commandCenter.previousTrackCommand.isEnabled = true
+        commandCenter.previousTrackCommand.isEnabled = !communicationMode
         commandCenter.previousTrackCommand.addTarget { _ in
             WearableEventDispatcher.shared.dispatchButton(name: "previousTrack")
             return .success
@@ -468,6 +469,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
         recordingStatus = statusText
         NotificationCenter.default.post(name: Notification.Name("AgentRelayRecordingStatus"), object: nil)
+        if communicationMode {
+            refreshCommunicationMediaState(active: isRecording)
+            return
+        }
         let infoCenter = MPNowPlayingInfoCenter.default()
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = "Agent Relay"
@@ -487,6 +492,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return
         }
         DeviceDiagnostics.shared.log("Button \(name) recording=\(isRecording) state=\(UIApplication.shared.applicationState.rawValue)")
+        if communicationMode {
+            guard ["play", "pause", "togglePlayPause", "stop"].contains(name) else { return }
+            let now = Date().timeIntervalSince1970
+            guard now - lastButtonTime >= 0.35 else { return }
+            lastButtonTime = now
+            communicationButtonHandler?(name)
+            return
+        }
         // 关键安全守卫：如果监听未开启，100% 忽略按键，绝不自动重启监听或发送消息
         guard isListening else {
             print("[WearableService] 监听未开启，忽略外部按键: \(name)")
@@ -540,13 +553,31 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         communicationMode = true
         communicationConversationId = conversationId
         shortcutDestination = [:]
+        registerRemoteCommands()
+        refreshCommunicationMediaState(active: false)
+    }
+
+    public func refreshCommunicationMediaState(active: Bool) {
+        guard communicationMode else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: "Agent Relay 语音会话",
+            MPMediaItemPropertyArtist: active ? "录音或播报中" : "已暂停 · 播放键尝试继续",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: active ? 1.0 : 0.0
+        ]
+        MPNowPlayingInfoCenter.default().playbackState = active ? .playing : .paused
     }
 
     public func leaveCommunicationMode() {
         if isRecording { stopRecording(shouldProcess: false) }
         stopPolling()
         communicationPlaybackHandler = nil
+        communicationButtonHandler = nil
         communicationConversationId = nil
+        if communicationMode {
+            unregisterRemoteCommands()
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
         communicationMode = false
     }
 

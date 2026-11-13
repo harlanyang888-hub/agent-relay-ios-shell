@@ -91,6 +91,9 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 try audio.setCategory(.playAndRecord, mode: .voiceChat,
                     options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
                 service.enterCommunicationMode(conversationId: conversationId)
+                service.communicationButtonHandler = { [weak self] name in
+                    self?.handleMediaButton(name)
+                }
                 service.communicationPlaybackHandler = { [weak self] data in
                     DispatchQueue.main.async { self?.receiveReply(data) }
                 }
@@ -121,7 +124,22 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         player?.stop()
         player = nil
         playbackData = nil
+        WearableService.shared.refreshCommunicationMediaState(active: false)
         setPaused(true)
+    }
+
+    private var lastMediaButton = Date.distantPast
+    private func handleMediaButton(_ name: String) {
+        guard callUUID != nil else { return }
+        guard Date().timeIntervalSince(lastMediaButton) >= 0.7 else { return }
+        lastMediaButton = Date()
+        log("收到媒体键 \(name) recording=\(WearableService.shared.isRecording)")
+        if WearableService.shared.isRecording {
+            guard WearableService.shared.capturedRecordingDuration >= 0.7 else { return }
+            pauseAndSend()
+        } else if name != "stop" {
+            resumeRecording()
+        }
     }
 
     func resumeRecording() {
@@ -194,6 +212,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             return
         }
         log("开始采音 input=\(WearableService.shared.recordingInputName)")
+        WearableService.shared.refreshCommunicationMediaState(active: true)
         recordingWasConfirmed = false
         confirmedTimer?.invalidate()
         confirmedTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
@@ -229,6 +248,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             player = try AVAudioPlayer(data: data)
             player?.delegate = self
             guard player?.play() == true else { throw ProbeError.playback }
+            WearableService.shared.refreshCommunicationMediaState(active: true)
             log("正在播放 Agent 回复")
         } catch {
             log("播报失败：\(error.localizedDescription)")
@@ -329,6 +349,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DispatchQueue.main.async {
             guard manager === self.manager else { return }
             self.audioActive = false
+            WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
             self.log("系统已停用音频会话；待验证其他 App 能否正常用麦")
         }
@@ -364,7 +385,7 @@ final class VoiceConversationProbeController: UIViewController {
         label.font = .systemFont(ofSize: 15)
         let help = UILabel()
         help.numberOfLines = 0
-        help.text = "独立实机测试：开始后会连接你自己的 Agent Relay 并录音。暂停并发送后，确认系统音频已停用，再安排 10 秒后恢复并锁屏。延迟请求只测试音频恢复，不证明蓝牙唤醒或长时间稳定性。结束时取消未发送录音。"
+        help.text = "建立会话后，尝试键盘播放/暂停键：录音中按键发送，暂停时按键继续。先测前台，再测锁屏，最后测播放其他 App 音频后是否还能收到按键。系统可能把媒体键交给其他播放器；本测试不使用无声播放保活。结束会话后取消按键监听。"
         help.font = .systemFont(ofSize: 14)
         let stack = UIStackView(arrangedSubviews: [help, label])
         stack.axis = .vertical
