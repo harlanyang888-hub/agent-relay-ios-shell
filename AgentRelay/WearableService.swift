@@ -443,6 +443,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 实体按键核心流转：按一下开始录音，再按一下立刻发出音频
     public func handleHardwareButtonPress(name: String) {
+        if BLEButtonTrial.shared.active {
+            BLEButtonTrial.shared.event("SYSTEM_REMOTE name=\(name) state=\(UIApplication.shared.applicationState.rawValue)")
+            return
+        }
         DeviceDiagnostics.shared.log("Button \(name) recording=\(isRecording) state=\(UIApplication.shared.applicationState.rawValue)")
         // 关键安全守卫：如果监听未开启，100% 忽略按键，绝不自动重启监听或发送消息
         guard isListening else {

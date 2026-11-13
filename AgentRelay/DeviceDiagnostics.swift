@@ -1,5 +1,6 @@
 import UIKit
 import CoreBluetooth
+import AVFoundation
 
 // 仅记录设备和录音状态，不记录 Cookie、音频或会话内容。
 final class DeviceDiagnostics {
@@ -43,6 +44,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var selected: CBPeripheral?
     private var notificationsReady = false
     private var lastValueLog: [String: (String, TimeInterval)] = [:]
+    private var volumeObservation: NSKeyValueObservation?
     private var scanningRequested = false
     private var scanTimeout: Timer?
     var onChange: (() -> Void)?
@@ -57,6 +59,13 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         central = CBCentralManager(delegate: self, queue: .main, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "agent-relay-ble-probe-v1"
         ])
+        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.old, .new]) { _, change in
+            let oldValue = change.oldValue ?? -1
+            let newValue = change.newValue ?? -1
+            DispatchQueue.main.async {
+                BLEButtonTrial.shared.event("SYSTEM_VOLUME old=\(oldValue) new=\(newValue) source=unknown")
+            }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(stopScan),
             name: UIApplication.didEnterBackgroundNotification, object: nil)
     }
@@ -238,16 +247,17 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         trialButton.addTarget(self, action: #selector(toggleButtonTrial), for: .touchUpInside)
         let mark = UIButton(type: .system)
         mark.setTitle("标记：刚按了麦克风实体键", for: .normal)
+        mark.setTitle("已按实体键", for: .normal)
         mark.addTarget(self, action: #selector(markPhysicalButton), for: .touchUpInside)
         let export = UIButton(type: .system)
-        export.setTitle("复制按键采样报告", for: .normal)
+        export.setTitle("复制采样报告", for: .normal)
         export.addTarget(self, action: #selector(copyTrial), for: .touchUpInside)
         let trialActions = UIStackView(arrangedSubviews: [mark, export])
         trialActions.distribution = .fillEqually
         trialLabel.numberOfLines = 0
         trialLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         let help = UILabel()
-        help.text = "先连接 DJI Mic Mini 2，通知就绪后开始采样。按屏幕提示操作实体键，每阶段只操作一次，再点标记。采样不录音、不写入麦克风设置。下方录音测试仍会发送给 Agent。"
+        help.text = "先连接 DJI Mic Mini 2，通知就绪后开始采样。按屏幕提示操作实体键，每阶段只操作一次，再点「已按实体键」。同时观察 BLE、系统媒体键和音量变化。采样不录音、不写入麦克风设置。"
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
@@ -319,6 +329,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         refresh()
     }
     @objc private func toggleRecording() {
+        guard !BLEButtonTrial.shared.active else { return }
         if WearableService.shared.isRecording { WearableService.shared.stopRecording() }
         else { WearableService.shared.startRecording() }
         refresh()
