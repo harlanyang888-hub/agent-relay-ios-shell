@@ -64,6 +64,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
     private var shortcutRecording = false
     private var shortcutDestination: [String: String] = [:]
+    // 系统语音会话测试：激活/停用交由 LiveCommunicationKit 管理。
+    public private(set) var communicationMode = false
+    public var communicationConversationId: String?
+    public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false
     public private(set) var currentDeviceName = "扬声器 / 听筒"
     public private(set) var isBluetoothConnected = false
@@ -79,6 +83,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // 后台轮询任务与看门狗
     private var replyPollingTask: URLSessionDataTask?
+    private var replyGeneration = UUID()
     private var pollTimer: Timer?
     private var keepaliveWatchdogTimer: Timer?
     private var recordingHealthTimer: Timer?
@@ -132,6 +137,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private func setupAudioSession(forRecording: Bool) -> Bool {
         let session = AVAudioSession.sharedInstance()
         do {
+            if communicationMode {
+                let preferred = session.availableInputs?.first { $0.portName.localizedCaseInsensitiveContains("DJI") }
+                    ?? session.availableInputs?.first { $0.portType == .bluetoothHFP }
+                if forRecording { try session.setPreferredInput(preferred) }
+                DeviceDiagnostics.shared.log("LCK audio system-managed input=\(session.currentRoute.inputs.map { $0.portName })")
+                return true
+            }
             var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker]
             if shortcutRecording && forRecording { options.insert(.allowBluetooth) }
             if session.category != .playAndRecord || session.mode != .default || session.categoryOptions != options {
@@ -339,6 +351,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 监听启动与停止
     public func startListening() {
+        guard !communicationMode else { return }
         guard !shortcutRecording else { return }
         guard !isListening else { return }
         isListening = true
@@ -517,6 +530,21 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     // MARK: - 原生麦克风录音控制
+    public func enterCommunicationMode(conversationId: String) {
+        stopListening()
+        communicationMode = true
+        communicationConversationId = conversationId
+        shortcutDestination = [:]
+    }
+
+    public func leaveCommunicationMode() {
+        if isRecording { stopRecording(shouldProcess: false) }
+        stopPolling()
+        communicationPlaybackHandler = nil
+        communicationConversationId = nil
+        communicationMode = false
+    }
+
     public func startShortcutRecording(context: [String: String] = [:]) {
         guard !isRecording else { return }
         // 快捷录音不启动耳机静音保活，停止后释放音频会话。
@@ -530,6 +558,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     private func releaseRecordingSession() {
+        if communicationMode { return }
         if shortcutRecording {
             silentPlayer?.stop()
             silentPlayer = nil
@@ -797,6 +826,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             "cwd": "/home/complicated/project/voice-hub"
         ]
         for (key, value) in shortcutDestination { payload[key] = value }
+        if let conversationId = communicationConversationId {
+            payload["conversationId"] = conversationId
+            payload["prompt"] = "【Agent Relay 语音会话】"
+        }
 
         guard let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
             print("[WearableService] 无法序列化语音上传请求体")
@@ -911,6 +944,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     private func stopPolling() {
+        replyGeneration = UUID()
         pollTimer?.invalidate()
         pollTimer = nil
         replyPollingTask?.cancel()
@@ -919,6 +953,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 请求 Edge-TTS 并播报到蓝牙耳机
     private func fetchTTSAndPlay(text: String) {
+        let attempt = replyGeneration
         guard let url = URL(string: "\(gatewayBaseURL)/api/tts") else { return }
 
         // 清洗文本中的 markdown 格式
@@ -950,6 +985,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             }
 
             DispatchQueue.main.async {
+                guard attempt == self.replyGeneration else { return }
                 self.playAudioStreamData(data: data)
             }
         }.resume()
@@ -969,6 +1005,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 语音流播放
     private func playAudioStreamData(data: Data) {
+        if communicationMode {
+            communicationPlaybackHandler?(data)
+            return
+        }
         guard !isRecording, !isSystemInterrupted else {
             DeviceDiagnostics.shared.log("Playback deferred/dropped while recording or interrupted")
             return
@@ -1056,6 +1096,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func playBeepStart() {
+        guard !communicationMode else { return }
         guard isListening || isRecording else { return }
         guard !isSystemInterrupted else { return }
         beepStartPlayer?.currentTime = 0

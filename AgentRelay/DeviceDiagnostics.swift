@@ -241,6 +241,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         copy.setTitle("复制日志", for: .normal)
         copy.addTarget(self, action: #selector(copyLog), for: .touchUpInside)
         recordButton.addTarget(self, action: #selector(toggleRecording), for: .touchUpInside)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "语音验证", style: .plain,
+            target: self, action: #selector(openVoiceProbe))
         let controls = UIStackView(arrangedSubviews: [scan, disconnect, copy])
         controls.distribution = .fillEqually
         trialButton.setTitle("开始 44 秒大疆按键采样", for: .normal)
@@ -308,6 +310,11 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
 
     @objc private func scanBLE() { BLEProbe.shared.scan() }
+    @objc private func openVoiceProbe() {
+        if #available(iOS 17.4, *) {
+            navigationController?.pushViewController(VoiceConversationProbeController(), animated: true)
+        }
+    }
     @objc private func disconnectBLE() { BLEProbe.shared.disconnect() }
     @objc private func copyLog() { UIPasteboard.general.string = DeviceDiagnostics.shared.text }
     @objc private func toggleButtonTrial() {
