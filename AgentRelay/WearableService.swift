@@ -49,6 +49,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         set {
             if let val = newValue, !val.isEmpty {
                 UserDefaults.standard.set(val, forKey: "wearable_auth_cookie")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "wearable_auth_cookie")
             }
         }
     }

@@ -21,6 +21,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var recordingWasConfirmed = false
     private var confirmedTimer: Timer?
     private var generation = UUID()
+    private var connectionDeadline: DispatchWorkItem?
 
     private override init() {
         super.init()
@@ -48,6 +49,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         guard !service.isRecording else { log("请先结束当前录音"); return }
         let audio = AVAudioSession.sharedInstance()
         guard audio.recordPermission == .granted else {
+            guard UIApplication.shared.applicationState == .active else {
+                log("请先打开 App 授予麦克风权限，再使用硬件按钮")
+                return
+            }
             audio.requestRecordPermission { granted in
                 DispatchQueue.main.async {
                     if granted { self.connect() }
@@ -64,6 +69,17 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         opening = true
         generation = UUID()
         let attempt = generation
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Hardware voice connection") { [weak self] in
+            guard let self = self, self.generation == attempt else { return }
+            self.abortConnection("后台建立会话超时，请重新按键")
+        }
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self = self, self.generation == attempt,
+                  self.opening || (self.wantsRecording && !self.audioActive) else { return }
+            self.abortConnection("系统未能及时建立会话，请重新按键")
+        }
+        connectionDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 22, execute: deadline)
         log("正在连接自己的 Agent Relay 语音会话")
         Task { @MainActor in
             do {
@@ -72,13 +88,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
-                request.timeoutInterval = 20
+                request.timeoutInterval = 15
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue(service.gatewayBaseURL, forHTTPHeaderField: "Origin")
                 request.setValue(cookie, forHTTPHeaderField: "Cookie")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
                     "hostId": "ubuntu", "project": "ubuntu-antigravity",
-                    "cwd": "/home/complicated/project/voice-hub", "title": "Agent Relay 语音会话测试"
+                    "cwd": "/home/complicated/project/voice-hub", "title": "穿戴语音会话"
                 ])
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard attempt == self.generation else { return }
@@ -105,16 +121,20 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)
                 try await self.manager.perform([action])
+                guard attempt == self.generation else { return }
                 self.opening = false
             } catch {
                 guard attempt == self.generation else { return }
-                self.log("建立失败：\(error.localizedDescription)")
-                self.opening = false
-                self.manager.invalidate()
-                self.cleanup()
-                self.configureManager()
+                self.abortConnection("建立失败：\(error.localizedDescription)")
             }
         }
+    }
+
+    private func abortConnection(_ message: String) {
+        manager.invalidate()
+        cleanup()
+        configureManager()
+        log(message)
     }
 
     func pauseAndSend() {
@@ -131,16 +151,19 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var lastMediaButton = Date.distantPast
     func handleDedicatedButton() {
         guard callUUID != nil else {
-            log("收到 BLE 按钮，但语音会话未建立；请先在前台建立会话")
+            guard !opening else { log("正在建立会话，请稍候；忽略重复按键"); return }
+            log("硬件按钮请求建立语音会话并录音")
+            connect()
             return
         }
+        guard !opening, !wantsRecording else { log("正在启动采音，忽略重复按键"); return }
         handleMediaButton("BLE-GATT")
     }
     private func handleMediaButton(_ name: String) {
         guard callUUID != nil else { return }
         guard Date().timeIntervalSince(lastMediaButton) >= 0.7 else { return }
         lastMediaButton = Date()
-        log("收到媒体键 \(name) recording=\(WearableService.shared.isRecording)")
+        log("收到按键 \(name) recording=\(WearableService.shared.isRecording)")
         if WearableService.shared.isRecording {
             guard WearableService.shared.capturedRecordingDuration >= 0.7 else { return }
             pauseAndSend()
@@ -264,6 +287,8 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func finishBackgroundTask() {
+        connectionDeadline?.cancel()
+        connectionDeadline = nil
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
@@ -300,6 +325,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DispatchQueue.main.async {
             guard manager === self.manager else { return }
             self.cleanup()
+            self.configureManager()
             self.log("系统已重置语音会话")
         }
     }

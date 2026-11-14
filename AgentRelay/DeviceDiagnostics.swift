@@ -83,8 +83,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         devices.removeAll()
         names.removeAll()
         signals.removeAll()
-        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
-        DeviceDiagnostics.shared.log("BLE 扫描附近强信号设备（30 秒，RSSI≥-80），把防丢器贴近手机并按键")
+        central.scanForPeripherals(withServices: [buttonService], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        DeviceDiagnostics.shared.log("BLE 扫描专用语音按钮（30 秒）")
         scanTimeout?.invalidate()
         scanTimeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.stopScan() }
         onChange?()
@@ -269,22 +269,25 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "设备测试"
+        title = "穿戴设备"
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
         let scan = UIButton(type: .system)
-        scan.setTitle("扫描 BLE", for: .normal)
+        scan.setTitle("添加按钮", for: .normal)
         scan.addTarget(self, action: #selector(scanBLE), for: .touchUpInside)
         let disconnect = UIButton(type: .system)
-        disconnect.setTitle("断开 BLE", for: .normal)
+        disconnect.setTitle("断开按钮", for: .normal)
         disconnect.addTarget(self, action: #selector(disconnectBLE), for: .touchUpInside)
         let copy = UIButton(type: .system)
         copy.setTitle("复制日志", for: .normal)
         copy.addTarget(self, action: #selector(copyLog), for: .touchUpInside)
         recordButton.addTarget(self, action: #selector(toggleRecording), for: .touchUpInside)
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "语音验证", style: .plain,
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "麦克风授权", style: .plain,
             target: self, action: #selector(openVoiceProbe))
-        let controls = UIStackView(arrangedSubviews: [scan, disconnect, copy])
+        let end = UIButton(type: .system)
+        end.setTitle("结束会话", for: .normal)
+        end.addTarget(self, action: #selector(endConversation), for: .touchUpInside)
+        let controls = UIStackView(arrangedSubviews: [scan, disconnect, end, copy])
         controls.distribution = .fillEqually
         trialButton.setTitle("开始 44 秒大疆按键采样", for: .normal)
         trialButton.addTarget(self, action: #selector(toggleButtonTrial), for: .touchUpInside)
@@ -300,14 +303,14 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         trialLabel.numberOfLines = 0
         trialLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         let help = UILabel()
-        help.text = "先连接 DJI Mic Mini 2，通知就绪后开始采样。按屏幕提示操作实体键，每阶段只操作一次，再点「已按实体键」。同时观察 BLE、系统媒体键和音量变化。采样不录音、不写入麦克风设置。"
+        help.text = "首次使用先登录、授权麦克风并添加按钮。之后按硬件键自动建立语音会话并开始说话，再按结束本轮并发送。锁屏和其他 App 中也可尝试触发。iOS 18 手动划掉 App 后需重新打开。"
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
         table.delegate = self
         logView.isEditable = false
         logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        let stack = UIStackView(arrangedSubviews: [controls, help, trialButton, trialLabel, trialActions, recordButton, table, logView])
+        let stack = UIStackView(arrangedSubviews: [controls, help, trialLabel, recordButton, table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -338,7 +341,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
                 if trial.phase > 0, trial.phase < 6 { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
             }
         } else {
-            trialLabel.text = BLEProbe.shared.connectionDescription + "\n采样结束后点「复制按键采样报告」"
+            trialLabel.text = BLEProbe.shared.connectionDescription
+            if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
             trialLabel.textColor = .label
         }
         trialButton.setTitle(trial.active ? "停止采样并生成报告" : "开始 44 秒大疆按键采样", for: .normal)
@@ -347,14 +351,19 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             logView.text = text
             if !text.isEmpty { logView.scrollRangeToVisible(NSRange(location: (text as NSString).length - 1, length: 1)) }
         }
-        recordButton.setTitle(WearableService.shared.isRecording ? "结束录音并发送" : "开始录音测试", for: .normal)
+        recordButton.setTitle(WearableService.shared.isRecording ? "结束本轮并发送" : "开始说话", for: .normal)
     }
 
     @objc private func scanBLE() { BLEProbe.shared.scan() }
     @objc private func openVoiceProbe() {
-        if #available(iOS 17.4, *) {
-            navigationController?.pushViewController(VoiceConversationProbeController(), animated: true)
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                DeviceDiagnostics.shared.log(granted ? "麦克风已授权；连接按钮后可按硬件键开始" : "麦克风未授权，请在系统设置中允许")
+            }
         }
+    }
+    @objc private func endConversation() {
+        if #available(iOS 17.4, *) { VoiceConversationProbe.shared.end() }
     }
     @objc private func disconnectBLE() { BLEProbe.shared.disconnect() }
     @objc private func copyLog() { UIPasteboard.general.string = DeviceDiagnostics.shared.text }
@@ -378,8 +387,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
     @objc private func toggleRecording() {
         guard !BLEButtonTrial.shared.active else { return }
-        if WearableService.shared.isRecording { WearableService.shared.stopRecording() }
-        else { WearableService.shared.startRecording() }
+        if #available(iOS 17.4, *) { VoiceConversationProbe.shared.handleDedicatedButton() }
         refresh()
     }
     @objc private func close() {

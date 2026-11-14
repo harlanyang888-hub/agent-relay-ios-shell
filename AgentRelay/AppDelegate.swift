@@ -18,8 +18,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         DeviceDiagnostics.shared.log("App launch keys=\(launchOptions?.keys.map { $0.rawValue } ?? [])")
         window = UIWindow(frame: UIScreen.main.bounds)
 
-        // 前台启动时配置待机和录音共用的音频会话。
-        WearableService.shared.startListening()
+        // 空闲不占用音频；专用 BLE 按键按需建立系统语音会话。
 
         let webVC = WebViewController()
         self.webViewController = webVC

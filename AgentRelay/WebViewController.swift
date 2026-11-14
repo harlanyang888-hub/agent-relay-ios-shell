@@ -1,7 +1,7 @@
 import UIKit
 import WebKit
 
-class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WearableServiceDelegate {
+class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WearableServiceDelegate, WKHTTPCookieStoreObserver {
     private var webView: WKWebView!
     private var activityIndicator: UIActivityIndicatorView!
     private var pendingTargetURL: URL?
@@ -16,10 +16,11 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         
         WearableService.shared.delegate = self
         setupWebView()
+        webView.configuration.websiteDataStore.httpCookieStore.add(self)
         setupIndicator()
         loadInitialURL()
         let deviceTestButton = UIButton(type: .system)
-        deviceTestButton.setTitle("设备测试", for: .normal)
+        deviceTestButton.setTitle("穿戴设备", for: .normal)
         deviceTestButton.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.95)
         deviceTestButton.layer.cornerRadius = 14
         deviceTestButton.translatesAutoresizingMaskIntoConstraints = false
@@ -32,8 +33,6 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             deviceTestButton.heightAnchor.constraint(equalToConstant: 36)
         ])
 
-        // 关键保活与响应：进入 App 立即自动开启耳机监听，开箱即用无需网页手动开启
-        WearableService.shared.startListening()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -197,13 +196,13 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
 
         switch action {
         case "startListening":
-            WearableService.shared.startListening()
+            _ = BLEProbe.shared
         case "stopListening":
             WearableService.shared.stopListening()
         case "startRecording":
-            WearableService.shared.startRecording()
+            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.handleDedicatedButton() }
         case "stopRecording":
-            WearableService.shared.stopRecording(shouldProcess: true)
+            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.pauseAndSend() }
         case "playAudio":
             let url = body["url"] as? String
             let base64 = body["base64"] as? String
@@ -231,13 +230,18 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         }
     }
 
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) { syncCookiesToWearable() }
+
     private func syncCookiesToWearable() {
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            let cookieHeaders = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-            if !cookieHeaders.isEmpty {
-                WearableService.shared.authCookie = cookieHeaders
-                print("[WebViewController] 成功同步 WKWebView Cookies (\(cookies.count) 条)")
+            guard let host = URL(string: self.targetURLString)?.host else { return }
+            let relevant = cookies.filter { cookie in
+                let domain = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
+                return (host == domain || host.hasSuffix("." + domain)) &&
+                    (cookie.expiresDate == nil || cookie.expiresDate! > Date())
             }
+            let cookieHeaders = relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+            WearableService.shared.authCookie = cookieHeaders.isEmpty ? nil : cookieHeaders
         }
     }
 
