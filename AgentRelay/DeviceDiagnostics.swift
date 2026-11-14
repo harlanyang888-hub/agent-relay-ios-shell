@@ -117,12 +117,20 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         BLEButtonTrial.shared.finish(reason: "用户断开连接")
         central.cancelPeripheralConnection(peripheral)
         selected = nil
+        UserDefaults.standard.removeObject(forKey: "relay_dedicated_button_id")
         notificationsReady = false
         DeviceDiagnostics.shared.log("BLE 已请求断开")
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         DeviceDiagnostics.shared.log("BLE state=\(central.state.rawValue)")
+        if central.state == .poweredOn, selected == nil,
+           let text = UserDefaults.standard.string(forKey: "relay_dedicated_button_id"),
+           let id = UUID(uuidString: text),
+           let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first {
+            DeviceDiagnostics.shared.log("BLE 自动恢复已绑定电脑按钮 \(id)")
+            connect(peripheral)
+        }
         if central.state == .poweredOn, scanningRequested { scan() }
     }
 
@@ -186,6 +194,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error = error { DeviceDiagnostics.shared.log("BLE 服务错误 \(error)"); return }
         for service in peripheral.services ?? [] {
+            if service.uuid == buttonService {
+                UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: "relay_dedicated_button_id")
+                names[peripheral.identifier] = "Agent Relay 电脑按钮"
+                onChange?()
+            }
             DeviceDiagnostics.shared.log("BLE service=\(service.uuid)")
             peripheral.discoverCharacteristics(nil, for: service)
         }

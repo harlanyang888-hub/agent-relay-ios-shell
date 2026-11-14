@@ -37,6 +37,7 @@ async def press():
     count = len(characteristic.subscribed_clients)
     state['subscribers'] = count
     if count == 0:
+        state['last'] = '手机未连接／未订阅，本次没有发送。请在 iPhone 设备测试页连接 RN12108（电脑按钮）。'
         raise ValueError('没有手机订阅，未发送。请在 Agent Relay 设备测试页连接电脑按钮。')
     if time.monotonic() - last_press < 0.8:
         raise ValueError('点击过快，请稍后再按')
@@ -55,10 +56,10 @@ HTML = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="wi
 <title>Agent Relay 电脑蓝牙按钮</title>
 <style>body{font:18px system-ui;max-width:680px;margin:60px auto;padding:20px;background:#f5f7fa;color:#202632}button{font:inherit;padding:22px;border-radius:12px;cursor:pointer;background:#1765db;color:white;border:0}pre{white-space:pre-wrap;line-height:1.7}</style>
 <h1>电脑 BLE 测试按钮</h1><p>先在 iPhone 设备测试页连接「Agent Relay 电脑按钮」，再进入语音验证建立会话。录音时按下停止并发送，暂停时按下恢复录音。</p>
-<button id="press" onclick="send('/press')">按一下：开始／停止录音</button><pre id="status"></pre>
+<h2 id="connection">正在检查连接</h2><button id="press" disabled onclick="send('/press')">按一下：开始／停止录音</button><pre id="status"></pre>
 <p>没有订阅时不会发送。电脑仅发送蓝牙事件，不使用媒体键；实际录音结果请看手机日志。</p>
 <button onclick="send('/stop')">停止模拟器并关闭广播</button>
-<script>const token='TOKEN';let busy=false;async function send(path){if(busy)return;busy=true;document.querySelector('#press').disabled=true;try{let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});document.querySelector('#status').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.querySelector('#status').textContent=e.message}finally{busy=false;document.querySelector('#press').disabled=false}}async function poll(){if(busy)return;try{let r=await fetch('/status');document.querySelector('#status').textContent=JSON.stringify(await r.json(),null,2)}catch(e){}}setInterval(poll,2000);poll();</script>'''.replace('TOKEN', TOKEN)
+<script>const token='TOKEN';let busy=false;function display(s){let ready=s.subscribers>0;document.querySelector('#connection').textContent=ready?'手机已订阅；录音会话是否就绪请看手机':'手机未连接／未订阅：请在 App 设备测试页连接 RN12108';document.querySelector('#connection').style.color=ready?'green':'#ba2020';document.querySelector('#press').disabled=!ready||busy;document.querySelector('#status').textContent=JSON.stringify(s,null,2)}async function send(path){if(busy)return;busy=true;document.querySelector('#press').disabled=true;try{let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});document.querySelector('#status').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.querySelector('#status').textContent=e.message}finally{busy=false;await poll()}}async function poll(){if(busy)return;try{let r=await fetch('/status');display(await r.json())}catch(e){document.querySelector('#connection').textContent='模拟器已停止或无法连接';document.querySelector('#press').disabled=true}}setInterval(poll,2000);poll();</script>'''.replace('TOKEN', TOKEN)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
@@ -103,6 +104,7 @@ async def main():
     characteristic=result.characteristic
     def subscribed(sender,args):
         state['subscribers']=len(sender.subscribed_clients);log(f"手机订阅数: {state['subscribers']}")
+        state['last'] = '手机已订阅，等待按键；请确认手机语音会话已建立' if state['subscribers'] else '手机订阅已断开，请重新连接；没有新的按钮事件发送'
     def advertising(sender,args):
         state['advertising']=str(args.status);log(f'广播状态: {args.status}, error={args.error}')
     characteristic.add_subscribed_clients_changed(subscribed)
