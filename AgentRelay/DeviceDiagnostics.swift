@@ -47,6 +47,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var volumeObservation: NSKeyValueObservation?
     private var scanningRequested = false
     private var scanTimeout: Timer?
+    private let buttonService = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
+    private let buttonEvent = CBUUID(string: "A8D70101-6B44-4E93-A2D5-73F2A34B8180")
+    private var buttonSession: Data?
+    private var buttonSequence: UInt32 = 0
     var onChange: (() -> Void)?
     var canRunButtonTrial: Bool { selected?.state == .connected && notificationsReady }
     var connectionDescription: String {
@@ -138,7 +142,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         let isNew = !devices.contains(where: { $0.identifier == peripheral.identifier })
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "未命名"
         if isNew { devices.append(peripheral) }
-        names[peripheral.identifier] = name
+        let advertisedServices = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+        names[peripheral.identifier] = advertisedServices.contains(buttonService) ? "Agent Relay 电脑按钮" : name
         signals[peripheral.identifier] = RSSI.intValue
         if isNew {
             let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
@@ -171,6 +176,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             BLEButtonTrial.shared.finish(reason: "设备断开，采样未完成")
         }
         DeviceDiagnostics.shared.log("BLE 断开 \(peripheral.identifier) error=\(String(describing: error))")
+        if peripheral.identifier == selected?.identifier,
+           peripheral.services?.contains(where: { $0.uuid == buttonService }) == true {
+            DeviceDiagnostics.shared.log("BLE 专用按钮等待重连")
+            central.connect(peripheral, options: nil)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -193,7 +203,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        if peripheral.identifier == selected?.identifier, characteristic.uuid == CBUUID(string: "FFF4") {
+        if peripheral.identifier == selected?.identifier, characteristic.uuid == CBUUID(string: "FFF4") || characteristic.uuid == buttonEvent {
             notificationsReady = characteristic.isNotifying && error == nil
         }
         DeviceDiagnostics.shared.log("BLE 订阅 \(characteristic.uuid) enabled=\(characteristic.isNotifying) error=\(String(describing: error))")
@@ -203,6 +213,24 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard peripheral.identifier == selected?.identifier else { return }
         let service = characteristic.service?.uuid.uuidString ?? "?"
         let data = characteristic.value ?? Data()
+        if characteristic.service?.uuid == buttonService, characteristic.uuid == buttonEvent {
+            guard error == nil, characteristic.isNotifying, data.count == 12,
+                  Array(data.prefix(4)) == [0x41, 0x52, 1, 1] else {
+                DeviceDiagnostics.shared.log("BLE 专用按钮拒绝无效事件")
+                return
+            }
+            let session = data.subdata(in: 4..<8)
+            let sequence = (0..<4).reduce(UInt32(0)) { $0 | UInt32(data[8 + $1]) << UInt32($1 * 8) }
+            if session == buttonSession, sequence <= buttonSequence {
+                DeviceDiagnostics.shared.log("BLE 专用按钮忽略重复事件 seq=\(sequence)")
+                return
+            }
+            buttonSession = session
+            buttonSequence = sequence
+            DeviceDiagnostics.shared.log("BLE 专用按钮收到 seq=\(sequence) state=\(UIApplication.shared.applicationState.rawValue)")
+            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.handleDedicatedButton() }
+            return
+        }
         BLEButtonTrial.shared.packet(service: service, characteristic: characteristic.uuid.uuidString, data: data, error: error)
         let key = service + "/" + characteristic.uuid.uuidString
         let now = ProcessInfo.processInfo.systemUptime

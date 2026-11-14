@@ -129,6 +129,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private var lastMediaButton = Date.distantPast
+    func handleDedicatedButton() {
+        guard callUUID != nil else {
+            log("收到 BLE 按钮，但语音会话未建立；请先在前台建立会话")
+            return
+        }
+        handleMediaButton("BLE-GATT")
+    }
     private func handleMediaButton(_ name: String) {
         guard callUUID != nil else { return }
         guard Date().timeIntervalSince(lastMediaButton) >= 0.7 else { return }
@@ -385,7 +392,7 @@ final class VoiceConversationProbeController: UIViewController {
         label.font = .systemFont(ofSize: 15)
         let help = UILabel()
         help.numberOfLines = 0
-        help.text = "建立会话后，尝试键盘播放/暂停键：录音中按键发送，暂停时按键继续。先测前台，再测锁屏，最后测播放其他 App 音频后是否还能收到按键。系统可能把媒体键交给其他播放器；本测试不使用无声播放保活。结束会话后取消按键监听。"
+        help.text = "电脑 GATT 测试：先在设备测试页连接「Agent Relay 电脑按钮」，再建立语音会话。电脑按钮在录音时停止并发送，暂停时恢复录音。分别测锁屏、其他播放器使用后、音乐播放中。蓝牙事件不经过媒体键，但采音仍可能打断音乐。此版本不恢复强退后的语音会话。"
         help.font = .systemFont(ofSize: 14)
         let stack = UIStackView(arrangedSubviews: [help, label])
         stack.axis = .vertical
