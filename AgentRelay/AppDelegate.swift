@@ -15,21 +15,31 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ = BLEProbe.shared
         DeviceDiagnostics.shared.log("App 启动 state=\(application.applicationState.rawValue)")
         DeviceDiagnostics.shared.log("App launch keys=\(launchOptions?.keys.map { $0.rawValue } ?? [])")
-        window = UIWindow(frame: UIScreen.main.bounds)
-
-        // 空闲不占用音频；专用 BLE 按键按需建立系统语音会话。
-
-        let webVC = WebViewController()
-        self.webViewController = webVC
-
-        window?.rootViewController = webVC
-        window?.makeKeyAndVisible()
-
         if let launchURL = launchOptions?[.url] as? URL {
             handleIncomingURLSafely(launchURL)
         }
         return true
     }
+
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: "Agent Relay", sessionRole: connectingSceneSession.role)
+        config.delegateClass = RelaySceneDelegate.self
+        return config
+    }
+
+    func attachWindow(to scene: UIWindowScene) -> UIWindow {
+        let window = UIWindow(windowScene: scene)
+        let webVC = WebViewController()
+        webViewController = webVC
+        window.rootViewController = webVC
+        self.window = window
+        window.makeKeyAndVisible()
+        DeviceDiagnostics.shared.log("App window attached scene=\(scene.activationState.rawValue)")
+        return window
+    }
+
+    func handleSceneURL(_ url: URL) { handleIncomingURLSafely(url) }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         DeviceDiagnostics.shared.log("App entered background category=\(AVAudioSession.sharedInstance().category.rawValue) recording=\(WearableService.shared.isRecording)")
@@ -83,5 +93,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } else {
             WearableService.shared.stopRecording(shouldProcess: action == "/stop")
         }
+    }
+}
+
+final class RelaySceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+    private var app: AppDelegate? { UIApplication.shared.delegate as? AppDelegate }
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene, let app = app else { return }
+        window = app.attachWindow(to: windowScene)
+        for context in connectionOptions.urlContexts { app.handleSceneURL(context.url) }
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) { app?.applicationDidBecomeActive(UIApplication.shared) }
+    func sceneDidEnterBackground(_ scene: UIScene) { app?.applicationDidEnterBackground(UIApplication.shared) }
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts { app?.handleSceneURL(context.url) }
     }
 }

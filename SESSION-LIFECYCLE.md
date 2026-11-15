@@ -25,3 +25,9 @@ https://developer.apple.com/documentation/technotes/tn3115-bluetooth-state-resto
 https://developer.apple.com/forums/thread/806013
 
 当前仍是向正式流程收敛的开发版本，尚未完成全部生命周期与端到端验收。
+
+## 1.0.13 (14)：修正系统授权入口
+
+用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。
+
+必须实测系统授权弹窗，以及升级后的页面/URL 打开、后台 BLE 恢复。550 的唯一根因尚未在设备上确认，不把编译成功当成修复已验收。

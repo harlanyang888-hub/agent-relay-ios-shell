@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.12</string>
+	<string>1.0.13</string>
 	<key>CFBundleVersion</key>
-	<string>13</string>
+	<string>14</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>
@@ -82,5 +82,19 @@
 	<array><string>Bluetooth</string></array>
 	<key>NSAccessorySetupBluetoothServices</key>
 	<array><string>A8D70100-6B44-4E93-A2D5-73F2A34B8180</string></array>
+	<key>NSAccessorySetupBluetoothNames</key>
+	<array><string>RN12108</string><string>AgentRelay</string></array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key><false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array><dict>
+				<key>UISceneConfigurationName</key><string>Agent Relay</string>
+				<key>UISceneDelegateClassName</key><string>$(PRODUCT_MODULE_NAME).RelaySceneDelegate</string>
+			</dict></array>
+		</dict>
+	</dict>
 </dict>
 </plist>
