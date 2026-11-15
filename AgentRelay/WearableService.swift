@@ -558,12 +558,18 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         communicationGeneration = UUID()
         communicationConversationId = conversationId
         shortcutDestination = [:]
-        registerRemoteCommands()
+        if !BLERecoveryLab.enabled { registerRemoteCommands() }
         refreshCommunicationMediaState(active: false)
     }
 
     public func refreshCommunicationMediaState(active: Bool) {
         guard communicationMode else { return }
+        if BLERecoveryLab.enabled {
+            // Dedicated GATT commands never need ownership of media transport.
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
+            return
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
             MPMediaItemPropertyTitle: "Agent Relay 语音会话",
             MPMediaItemPropertyArtist: active ? "录音或播报中" : "已暂停 · 播放键尝试继续",

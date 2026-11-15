@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import queue as thread_queue
 from pathlib import Path
 import secrets
 import sys
@@ -32,6 +33,20 @@ loop = characteristic = provider = stop_event = options = None
 state = {'advertising': 'starting', 'subscribers': 0, 'last': '等待手机订阅', 'last_notify': None}
 last_notify_at = 0
 last_press = 0
+release_queue = thread_queue.Queue()
+
+
+def release_winrt_objects():
+    # Bluetooth COM Release can wait for a Windows callback. Never run the last
+    # Release inside the asyncio completion callback, where it stalls HTTP too.
+    while True:
+        objects = release_queue.get()
+        time.sleep(.1)  # Let the originating coroutine/callback drop its refs first.
+        del objects
+        release_queue.task_done()
+
+
+threading.Thread(target=release_winrt_objects, daemon=True, name='WinRT-release').start()
 
 
 def log(message):
@@ -46,19 +61,26 @@ def buffer(data):
 
 async def notify(packet=None):
     global last_notify_at
-    state['subscribers'] = len(characteristic.subscribed_clients)
     packet = packet if packet is not None else queue.head()
     if not packet or not state['subscribers']:
         return
-    results = await characteristic.notify_value_async(buffer(packet))
-    last_notify_at = time.monotonic()
-    state['last_notify'] = {'sequence': decode(packet)['sequence'], 'transport': [str(x.status) for x in results]}
-    log('已调用 GATT 通知；执行结果以手机 ACK 为准 ' + str(state['last_notify']))
+    operation = characteristic.notify_value_async(buffer(packet))
+    results = None
+    try:
+        results = await operation
+        last_notify_at = time.monotonic()
+        state['last_notify'] = {'sequence': decode(packet)['sequence'], 'transport': [str(x.status) for x in results]}
+        log('已调用 GATT 通知；执行结果以手机 ACK 为准 ' + str(state['last_notify']))
+    except Exception as error:
+        last_notify_at = time.monotonic()
+        state['last'] = '通知失败，命令保留等待重试: ' + str(error)
+        log(state['last'])
+    finally:
+        release_queue.put((operation, results))
 
 
 async def snapshot():
     result = queue.snapshot()
-    state['subscribers'] = len(characteristic.subscribed_clients)
     result.update(state)
     for key in ('pending', 'history'):
         result[key] = [dict(item, **decode(bytes.fromhex(item['packet']))) for item in result[key]]
@@ -70,7 +92,7 @@ async def snapshot():
 async def action(path):
     global last_press
     if path == '/expiry-probe':
-        if len(characteristic.subscribed_clients) or queue.head():
+        if state['subscribers'] or queue.head():
             raise ValueError('过期测试要求手机未订阅且队列为空')
         queue.enqueue(START, ttl=2)
         state['last'] = '过期测试命令已缓存，2秒后过期；不主动发送'
@@ -157,20 +179,25 @@ class Handler(BaseHTTPRequestHandler):
 
 
 async def handle_read(event, deferral, supplier):
+    operation = request = None
     try:
-        request = await event.get_request_async()
+        operation = event.get_request_async()
+        request = await operation
         if request:
             request.respond_with_value(buffer(supplier()[request.offset:]))
     except Exception as error:
         log('READ error: ' + str(error))
     finally:
         deferral.complete()
+        release_queue.put((event, deferral, operation, request))
 
 
 async def handle_write(event, deferral):
     global last_notify_at
+    operation = request = None
     try:
-        request = await event.get_request_async()
+        operation = event.get_request_async()
+        request = await operation
         if request:
             try:
                 data = bytearray(request.value.length)
@@ -186,8 +213,11 @@ async def handle_write(event, deferral):
             except Exception as error:
                 log('ACK rejected: ' + str(error))
                 request.respond_with_protocol_error(0x0e)
+    except Exception as error:
+        log('WRITE error: ' + str(error))
     finally:
         deferral.complete()
+        release_queue.put((event, deferral, operation, request))
 
 
 async def main():
@@ -201,18 +231,20 @@ async def main():
     if result.error != BluetoothError.SUCCESS:
         raise RuntimeError('创建服务失败: ' + str(result.error))
     provider = result.service_provider
-    async def create(uuid, properties):
+    async def create(uuid, properties, static_value=None):
         parameters = GattLocalCharacteristicParameters()
         parameters.characteristic_properties = properties
         parameters.read_protection_level = GattProtectionLevel.PLAIN
         parameters.write_protection_level = GattProtectionLevel.PLAIN
+        if static_value is not None:
+            parameters.static_value = buffer(static_value)
         result = await provider.service.create_characteristic_async(uuid, parameters)
         if result.error != BluetoothError.SUCCESS:
             raise RuntimeError('创建特征失败: ' + str(result.error))
         return result.characteristic
     characteristic = await create(EVENT, GattCharacteristicProperties.READ | GattCharacteristicProperties.NOTIFY)
     ack = await create(ACK, GattCharacteristicProperties.WRITE)
-    identity = await create(IDENTITY, GattCharacteristicProperties.READ)
+    identity = await create(IDENTITY, GattCharacteristicProperties.READ, UUID(queue.data['device_id']).bytes)
     def read(supplier):
         def callback(sender, event):
             deferral = event.get_deferral()
@@ -222,9 +254,10 @@ async def main():
         deferral = event.get_deferral()
         loop.call_soon_threadsafe(lambda: asyncio.create_task(handle_write(event, deferral)))
     def subscribed(sender, event):
+        count = len(sender.subscribed_clients)
         def update():
             global last_notify_at
-            state['subscribers'] = len(sender.subscribed_clients)
+            state['subscribers'] = count
             last_notify_at = 0
             log('手机订阅数: ' + str(state['subscribers']))
         loop.call_soon_threadsafe(update)
@@ -232,7 +265,6 @@ async def main():
         state['advertising'] = str(event.status)
         log('广播状态: ' + str(event.status) + ' error=' + str(event.error))
     characteristic.add_read_requested(read(queue.head))
-    identity.add_read_requested(read(lambda: UUID(queue.data['device_id']).bytes))
     ack.add_write_requested(written)
     characteristic.add_subscribed_clients_changed(subscribed)
     provider.add_advertisement_status_changed(advertising)
