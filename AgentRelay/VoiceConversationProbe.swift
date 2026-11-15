@@ -8,6 +8,7 @@ import LiveCommunicationKit
 final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAudioPlayerDelegate {
     static let shared = VoiceConversationProbe()
     private var manager: ConversationManager!
+    private var managerReady = false
     private(set) var callUUID: UUID?
     private(set) var audioActive = false
     private(set) var paused = false
@@ -29,6 +30,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func configureManager() {
+        managerReady = false
         let config = ConversationManager.Configuration(
             ringtoneName: nil, iconTemplateImageData: nil,
             maximumConversationGroups: 1, maximumConversationsPerConversationGroup: 1,
@@ -120,7 +122,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 let action = StartConversationAction(conversationUUID: uuid,
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)
-                try await self.manager.perform([action])
+                try await self.startSystemConversation(action, attempt: attempt)
                 guard attempt == self.generation else { return }
                 self.opening = false
             } catch {
@@ -135,6 +137,38 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         cleanup()
         configureManager()
         log(message)
+    }
+
+    @MainActor
+    private func waitForManager(attempt: UUID) async throws {
+        for _ in 0..<60 {
+            guard attempt == generation else { throw CancellationError() }
+            if managerReady { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw ProbeError.managerNotReady
+    }
+
+    @MainActor
+    private func startSystemConversation(_ action: StartConversationAction, attempt: UUID) async throws {
+        try await waitForManager(attempt: attempt)
+        do {
+            try await manager.perform([action])
+        } catch {
+            let ns = error as NSError
+            DeviceDiagnostics.shared.log("LCK 启动请求失败 domain=\(ns.domain) code=\(ns.code) detail=\(ns.userInfo)")
+            guard attempt == generation,
+                  ns.domain == "com.apple.CallKit.error.requesttransaction", ns.code == 6 else { throw error }
+            // 系统拒绝动作时只重建一次管理器，不循环重试或伪造来电。
+            manager.invalidate()
+            configureManager()
+            log("系统拒绝启动动作，重建语音管理器后重试一次")
+            try await waitForManager(attempt: attempt)
+            guard let uuid = callUUID else { throw CancellationError() }
+            let retry = StartConversationAction(conversationUUID: uuid,
+                handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")], isVideo: false)
+            try await manager.perform([retry])
+        }
     }
 
     func pauseAndSend() {
@@ -318,7 +352,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func conversationManagerDidBegin(_ manager: ConversationManager) {
-        DeviceDiagnostics.shared.log("LCK manager began")
+        DispatchQueue.main.async {
+            guard manager === self.manager else { return }
+            self.managerReady = true
+            DeviceDiagnostics.shared.log("LCK manager began")
+        }
     }
 
     func conversationManagerDidReset(_ manager: ConversationManager) {
@@ -394,12 +432,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private enum ProbeError: LocalizedError {
-        case invalidEndpoint, gateway(Int), playback
+        case invalidEndpoint, gateway(Int), playback, managerNotReady
         var errorDescription: String? {
             switch self {
             case .invalidEndpoint: return "服务器地址无效"
             case .gateway(let code): return "Agent Relay HTTP \(code)，请检查登录和连接"
             case .playback: return "无法启动回复音频"
+            case .managerNotReady: return "系统语音管理器未就绪，请重新按键"
             }
         }
     }

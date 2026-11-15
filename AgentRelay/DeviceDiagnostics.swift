@@ -11,6 +11,7 @@ private final class HardwareAccessoryBinding {
     var onRemoved: ((UUID) -> Void)?
     var onChange: (() -> Void)?
     var onBeforePicker: (() -> Void)?
+    var onAfterPicker: (() -> Void)?
     private(set) var status = "正在读取系统设备授权"
     private var presenting = false
     private var migrating = false
@@ -40,6 +41,7 @@ private final class HardwareAccessoryBinding {
                 self.status = "系统设备会话失效，请重新打开 App"
             case .pickerDidDismiss:
                 self.presenting = false
+                self.onAfterPicker?()
                 if self.session.accessories.isEmpty { self.status = "尚未完成系统授权，请重试添加按钮" }
             case .pickerDidPresent:
                 self.status = "请在苹果系统弹窗中确认设备"
@@ -98,12 +100,13 @@ private final class HardwareAccessoryBinding {
         onBeforePicker?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             guard let self = self else { return }
-            guard UIApplication.shared.applicationState == .active else { self.presenting = false; return }
+            guard UIApplication.shared.applicationState == .active else { self.presenting = false; self.onAfterPicker?(); return }
             DeviceDiagnostics.shared.log("ASK picker request state=\(UIApplication.shared.applicationState.rawValue) activeScenes=\(UIApplication.shared.connectedScenes.filter { $0.activationState == .foregroundActive }.count)")
             self.session.showPicker(for: items) { [weak self] error in
             DeviceDiagnostics.shared.log("ASK picker completion error=\(String(describing: error))")
             self?.presenting = false
             if let error = error {
+                self?.onAfterPicker?()
                 self?.migrating = false
                 self?.status = "设备授权未完成：\(error.localizedDescription)"
                 let ns = error as NSError
@@ -210,6 +213,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             }
             binding.onChange = { [weak self] in self?.onChange?() }
             binding.onBeforePicker = { [weak self] in self?.releaseCentralForSetup() }
+            binding.onAfterPicker = { [weak self] in self?.restoreDedicatedButton() }
             binding.start()
         } else { ensureCentral() }
         volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.old, .new]) { _, change in
@@ -224,6 +228,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func scan() {
+        if selected?.state == .connected, notificationsReady {
+            DeviceDiagnostics.shared.log("BLE 按钮已连接且通知就绪，无需再次添加；可直接按硬件键录音")
+            onChange?()
+            return
+        }
         if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding {
             binding.addOrReconnect()
             return
