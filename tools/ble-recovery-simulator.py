@@ -69,7 +69,12 @@ async def snapshot():
 
 async def action(path):
     global last_press
-    if path in ('/start', '/finish'):
+    if path == '/expiry-probe':
+        if len(characteristic.subscribed_clients) or queue.head():
+            raise ValueError('过期测试要求手机未订阅且队列为空')
+        queue.enqueue(START, ttl=2)
+        state['last'] = '过期测试命令已缓存，2秒后过期；不主动发送'
+    elif path in ('/start', '/finish'):
         if time.monotonic() - last_press < .5:
             raise ValueError('请勿快速重复点击')
         packet = queue.enqueue(START if path == '/start' else STOP)
@@ -103,7 +108,7 @@ HTML = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="wi
 <h2 id="connection">读取状态中</h2><button onclick="send('/start')">开始录音</button><button onclick="send('/finish')">结束并发送</button>
 <button onclick="send('/replay')">重发上条原编号（去重测试）</button>
 <small>断线时命令保存最多120秒。收到不等于执行；只有手机执行确认才出队。停止确认表示已停止且上传已排队，服务端成功以手机 HTTP accepted 日志为准。</small>
-<details><summary>广播控制</summary><button onclick="send('/advertising/off')">暂停广播</button><button onclick="send('/advertising/on')">恢复广播</button><p>暂停广播不保证断开已有连接。真实断链测试使用手机测试页的“断链15秒”。</p></details>
+<details><summary>广播及过期测试</summary><button onclick="send('/advertising/off')">暂停广播</button><button onclick="send('/advertising/on')">恢复广播</button><button onclick="send('/expiry-probe')">排队2秒过期命令（须未连接）</button><p>暂停广播不保证断开已有连接。真实断链测试使用手机测试页的“断链15秒”。过期测试后等待至少3秒，再重开手机App，不应开始录音。</p></details>
 <pre id="status"></pre><p id="error" style="color:#b00"></p><button onclick="send('/stop-server')">停止测试模拟器</button>
 <script>const token='TOKEN';let busy=false;async function poll(){try{let s=await(await fetch('/status')).json();document.querySelector('#connection').textContent=s.subscribers?'手机已订阅；待发 '+s.pending.length+' 条':'手机未订阅；已缓存 '+s.pending.length+' 条';document.querySelector('#status').textContent=JSON.stringify(s,null,2)}catch(e){document.querySelector('#connection').textContent='模拟器未运行'}}async function send(path){if(busy)return;busy=true;try{let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});let s=await r.json();document.querySelector('#error').textContent=r.ok?'':s.error}catch(e){document.querySelector('#error').textContent=e.message}finally{busy=false;await poll()}}setInterval(poll,1000);poll();</script>'''.replace('TOKEN', TOKEN)
 
