@@ -215,6 +215,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func end() {
+        submitRecordingBeforeEnding()
         generation = UUID()
         cancelScheduledResume()
         guard let uuid = callUUID else { opening = false; return }
@@ -226,6 +227,14 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 self.cleanup()
                 self.configureManager()
             }
+        }
+    }
+
+    private func submitRecordingBeforeEnding() {
+        wantsRecording = false
+        if WearableService.shared.isRecording {
+            log("结束语音会话：提交本轮有效录音")
+            WearableService.shared.stopRecording(shouldProcess: true)
         }
     }
 
@@ -348,6 +357,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 }
                 action.fulfill()
             case is EndConversationAction:
+                self.submitRecordingBeforeEnding()
                 self.cleanup()
                 action.fulfill()
                 self.log("语音会话已结束")

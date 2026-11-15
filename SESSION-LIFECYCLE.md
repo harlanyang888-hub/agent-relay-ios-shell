@@ -50,6 +50,14 @@ https://developer.apple.com/forums/thread/806013
 
 为保留成功基线的启动顺序与失效 Cookie 检查，原 POST /api/conversations 改为 GET /api/bootstrap 进行只读鉴权预检（成功后再请求 LCK），而非直接删去网络阶段。已核对网关存在该 requireUi 保护的只读路由，不会预建空会话。已对比已交付 1.0.11 与 1.0.18 的归档：均为 Xcode 16.4/16F6、iphoneos18.5 SDK、最低 iOS 15 及相同后台模式。
 
+## 1.0.21 (22)：结束会话提交录音与完整目标
+
+1.0.20 实测确认：后台首键创建 LCK 并采音恢复成功（09:59:52 state=2，约14.34秒）。不能因此放弃完整目标：设备按键在锁屏、其他 App、进程被关闭后恢复并采音、停止发送给 Agent。iOS 18 普通后台路径作为已验证基线；手动强退后的唤起需另行在 iOS 26 + ASK 验证 pending BLE 操作的恢复，再验证 LCK 与真实采音，不能承诺升级即全链路成功。重启首次解锁、蓝牙关闭/设备离线不属于无条件可用状态。
+
+用户日志中录音结束 process=false 的原因已在源码核对：App end() 和系统 EndConversationAction 调用 cleanup -> leaveCommunicationMode -> stopRecording(false)，把正常结束误当取消，且取消会删除文件。本版在 App 请求结束前、以及系统 EndConversationAction 清理前，先 stopRecording(true)，由 isRecording 防止双发；显式取消、系统中断/重置仍保留原逻辑。按钮停止本轮仍走 pauseAndSend。新增 Voice upload queued、accepted（HTTP、conversationId、messageId）诊断，只有有效成功响应才报发送成功。结束会话改为结束并发送，避免标签歧义。有效录音上传时才创建服务端会话；失败启动不预建空条目。
+
+下一阶段验收：先核对两种正常结束都出现 process=true、有效解码、HTTP accepted、服务端会话与消息可见；保留后台首键成功。然后独立构建 iOS 26 ASK 恢复测试包，先验收强退后 BLE 进程恢复/订阅/按键，再接回已验证的录音与发送动作。用户已明确拒绝前台预建系统会话方案，不得重新引入自动待命。
+
 ## 1.0.13 (14)：修正系统授权入口
 
 用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。

@@ -878,6 +878,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return
         }
         request.httpBody = bodyData
+        DeviceDiagnostics.shared.log("Voice upload queued duration=\(duration) encodedChars=\(audioBase64.count)")
 
         // 停止采音后不再静音保活；申请有限后台时间完成本次上传。
         var uploadBackgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -916,15 +917,22 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 return
             }
 
-            print("[WearableService] 语音已成功送达网关！")
-            // 播放轻快上升音：提示已发送成功
-            self.playBeepStart()
-            self.updateNowPlayingInfo(statusText: "已发送给 Agent，录音已保存在 Recordings")
-
-            // 解析返回的全新 conversationId 用于轮询该会话的 Agent 回复，轮询完毕朗读到耳机
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let convId = json["conversationId"] as? String {
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["ok"] as? Bool == true,
+                  let convId = json["conversationId"] as? String, !convId.isEmpty else {
+                DeviceDiagnostics.shared.log("Voice upload response invalid HTTP=\(httpResponse.statusCode)，未确认发送")
                 DispatchQueue.main.async {
+                    self.updateNowPlayingInfo(statusText: "未确认发送，录音保存在 Recordings")
+                }
+                return
+            }
+            let messageId = json["messageId"] as? String ?? "unknown"
+            DeviceDiagnostics.shared.log("Voice upload accepted HTTP=\(httpResponse.statusCode) conversationId=\(convId) messageId=\(messageId)")
+            print("[WearableService] 语音已成功送达网关！")
+            DispatchQueue.main.async {
+                    // 只有服务端确认后才提示发送成功。
+                    self.playBeepStart()
+                    self.updateNowPlayingInfo(statusText: "已发送给 Agent，录音已保存在 Recordings")
                     if let uploadGeneration = uploadGeneration,
                        self.communicationMode, self.communicationGeneration == uploadGeneration {
                         self.communicationConversationId = convId
@@ -934,7 +942,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                     }
                     self.updateNowPlayingInfo(statusText: "🟡 已发送，Agent 正在思考...")
                     self.startPollingAgentReply(conversationId: convId)
-                }
             }
         }
         task.resume()

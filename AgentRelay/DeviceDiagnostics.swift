@@ -285,7 +285,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         navigationItem.leftBarButtonItem = UIBarButtonItem(title: "麦克风授权", style: .plain,
             target: self, action: #selector(openVoiceProbe))
         let end = UIButton(type: .system)
-        end.setTitle("结束会话", for: .normal)
+        end.setTitle("结束并发送", for: .normal)
         end.addTarget(self, action: #selector(endConversation), for: .touchUpInside)
         let controls = UIStackView(arrangedSubviews: [scan, disconnect, end, copy])
         controls.distribution = .fillEqually
