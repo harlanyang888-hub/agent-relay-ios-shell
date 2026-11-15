@@ -134,22 +134,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     @MainActor
     private func startSystemConversation(_ action: StartConversationAction, attempt: UUID) async throws {
         try await waitForManager(attempt: attempt)
+        DeviceDiagnostics.shared.log("LCK 启动诊断 backgroundModes=\(Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") ?? []) state=\(UIApplication.shared.applicationState.rawValue) lifecycle=legacy")
         do {
             try await manager.perform([action])
         } catch {
             let ns = error as NSError
             DeviceDiagnostics.shared.log("LCK 启动请求失败 domain=\(ns.domain) code=\(ns.code) detail=\(ns.userInfo)")
-            guard attempt == generation,
-                  ns.domain == "com.apple.CallKit.error.requesttransaction", ns.code == 6 else { throw error }
-            // 系统拒绝动作时只重建一次管理器，不循环重试或伪造来电。
-            manager.invalidate()
-            configureManager()
-            log("系统拒绝启动动作，重建语音管理器后重试一次")
-            try await waitForManager(attempt: attempt)
-            guard let uuid = callUUID else { throw CancellationError() }
-            let retry = StartConversationAction(conversationUUID: uuid,
-                handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")], isVideo: false)
-            try await manager.perform([retry])
+            throw error
         }
     }
 

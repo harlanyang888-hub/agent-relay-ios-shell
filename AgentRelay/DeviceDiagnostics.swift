@@ -65,7 +65,7 @@ private final class HardwareAccessoryBinding {
             return
         }
         guard UIApplication.shared.applicationState == .active,
-              UIApplication.shared.connectedScenes.contains(where: { $0.activationState == .foregroundActive }) else {
+              (UIApplication.shared.delegate as? AppDelegate)?.window?.isKeyWindow == true else {
             status = "请保持穿戴设备页面在前台，再添加按钮"
             DeviceDiagnostics.shared.log("ASK picker deferred state=\(UIApplication.shared.applicationState.rawValue) scenes=\(UIApplication.shared.connectedScenes.count)")
             onChange?()

@@ -26,6 +26,14 @@ https://developer.apple.com/forums/thread/806013
 
 当前仍是向正式流程收敛的开发版本，尚未完成全部生命周期与端到端验收。
 
+## 1.0.18 (19)：回归后台启动基线
+
+用户 1.0.16 实测：同一 BLE 按钮在前台启动 LCK 成功，在后台新建 LCK 返回 CallKit requesttransaction 6；无需其他语音通话也能复现。重建管理器重试已证实无效，移除该重试。恢复 1.0.11 成功版本的 UIApplicationDelegate/单 UIWindow 生命周期，撤回 1.0.13 引入的 UIScene 切换；保留 ASK 授权和已授权自动重连，选择器前台检查改为 active app + key window。生命周期变更是回归嫌疑项，尚不能称为已证实根因，需同设备验收。
+
+启动与每次 LCK 请求记录实际安装包 UIBackgroundModes，用于确认签名后是否仍保留 audio/voip/bluetooth-central，避免仅用 unsigned IPA 推断设备运行配置。没有使用虚构来电或静音保活。
+
+保留 1.0.17 空会话修复：系统录音启动前不再 POST /api/conversations；首次有效录音发送时由既有 /api/shortcuts/voice 创建服务端会话并返回 ID，后续复用。失败启动与取消不产生预创建空会话。旧上传回调按通信代次隔离。既有空条目未自动删除。
+
 ## 1.0.13 (14)：修正系统授权入口
 
 用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。
