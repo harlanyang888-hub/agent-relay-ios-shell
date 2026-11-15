@@ -22,6 +22,48 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var confirmedTimer: Timer?
     private var generation = UUID()
     private var connectionDeadline: DispatchWorkItem?
+    private var labCommand: BLELabCommand?
+    private var labCompletion: ((Bool, String) -> Void)?
+    private var labDeadline: DispatchWorkItem?
+
+    func executeLabCommand(_ command: BLELabCommand, completion: @escaping (Bool, String) -> Void) {
+        guard !command.expired else { completion(false, "命令已过期"); return }
+        if command.action == .stop {
+            guard WearableService.shared.isRecording else { completion(true, "已经停止，不重复提交"); return }
+            if callUUID == nil { WearableService.shared.stopRecording(shouldProcess: true) }
+            else { pauseAndSend() }
+            completion(WearableService.shared.lastVoiceSubmissionQueued, WearableService.shared.lastVoiceSubmissionQueued ? "录音已停止，上传已排队" : "录音已停止，但音频未通过提交检查")
+            return
+        }
+        guard labCompletion == nil else { completion(false, "另一个命令正在执行"); return }
+        if WearableService.shared.isRecording, WearableService.shared.capturedRecordingDuration >= 0.3 {
+            completion(true, "已经录音，不重复开始")
+            return
+        }
+        labCommand = command
+        labCompletion = completion
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self = self, self.labCompletion != nil else { return }
+            self.wantsRecording = false
+            self.finishLabCommand(false, "录音启动未获确认，未将收到当作执行成功")
+            if self.callUUID != nil { self.setPaused(true) }
+        }
+        labDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 28, execute: deadline)
+        if !WearableService.shared.isRecording {
+            if callUUID == nil { connect() }
+            else { resumeRecording() }
+        }
+    }
+
+    private func finishLabCommand(_ success: Bool, _ message: String) {
+        labDeadline?.cancel()
+        labDeadline = nil
+        let completion = labCompletion
+        labCompletion = nil
+        labCommand = nil
+        completion?(success, message)
+    }
 
     private override init() {
         super.init()
@@ -94,6 +136,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 request.setValue(cookie, forHTTPHeaderField: "Cookie")
                 let (_, response) = try await URLSession.shared.data(for: request)
                 guard attempt == self.generation else { return }
+                if let command = self.labCommand, command.expired {
+                    self.abortConnection("硬件命令已过期，不启动录音")
+                    return
+                }
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     throw ProbeError.gateway((response as? HTTPURLResponse)?.statusCode ?? -1)
                 }
@@ -128,6 +174,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func abortConnection(_ message: String) {
+        finishLabCommand(false, message)
         manager.invalidate()
         cleanup()
         configureManager()
@@ -240,6 +287,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     private func beginRecordingIfNeeded() {
         guard wantsRecording, audioActive, callUUID != nil else { return }
+        if let command = labCommand, command.expired {
+            wantsRecording = false
+            finishLabCommand(false, "硬件命令已过期，不启动录音")
+            setPaused(true)
+            return
+        }
         wantsRecording = false
         WearableService.shared.startRecording()
         guard WearableService.shared.isRecording else {
@@ -261,6 +314,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             } else if !self.recordingWasConfirmed && service.capturedRecordingDuration >= 1 {
                 self.recordingWasConfirmed = true
                 self.log("采音帧持续增长 input=\(service.recordingInputName)")
+                self.finishLabCommand(true, "采音时长持续增长，开始录音已确认")
             }
         }
     }
@@ -308,6 +362,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func cleanup() {
+        finishLabCommand(false, "系统会话已结束或重置")
         generation = UUID()
         opening = false
         callUUID = nil

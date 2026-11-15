@@ -75,6 +75,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         interruptedDate = nil
     }
     public var communicationConversationId: String?
+    public private(set) var lastVoiceSubmissionQueued = false
     private var communicationGeneration = UUID()
     public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false
@@ -736,6 +737,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
+        lastVoiceSubmissionQueued = false
 
         recordingHealthTimer?.invalidate()
         recordingHealthTimer = nil
@@ -945,6 +947,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             }
         }
         task.resume()
+        lastVoiceSubmissionQueued = true
     }
 
     // MARK: - 后台轮询 Agent 回复并自动推送到耳机朗读

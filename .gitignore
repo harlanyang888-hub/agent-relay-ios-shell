@@ -4,3 +4,5 @@ DerivedData/
 .DS_Store
 Payload/
 AgentRelay.ipa
+__pycache__/
+*.pyc

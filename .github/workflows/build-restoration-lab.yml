@@ -1,0 +1,35 @@
+name: Build recovery lab
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [legacy, ask]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check command queue and phone receipts
+        run: |
+          python3 -m unittest discover -s tools -p test_ble_command_queue.py -v
+          swiftc AgentRelay/BLELabCommand.swift tests/commands/main.swift -o /tmp/recovery-command-checks
+          /tmp/recovery-command-checks
+          swiftc AgentRelay/BLEButtonTrial.swift tests/main.swift -o /tmp/ble-existing-checks
+          /tmp/ble-existing-checks
+      - name: Configure profile
+        run: python3 tools/configure-recovery-build.py ${{ matrix.profile }}
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project AgentRelay.xcodeproj -scheme AgentRelay -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build
+      - name: Package
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/AgentRelay.app Payload/
+          zip -qr AgentRelay.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentRelay-recovery-${{ matrix.profile }}-ipa
+          path: AgentRelay.ipa
