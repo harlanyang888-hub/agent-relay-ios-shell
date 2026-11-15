@@ -10,6 +10,10 @@ enum BLERecoveryLab {
     static let ack = "A8D70202-6B44-4E93-A2D5-73F2A34B8180"
     static let identity = "A8D70203-6B44-4E93-A2D5-73F2A34B8180"
     static var bindingKey: String { enabled ? "relay_lab_button_id_v2" : "relay_dedicated_button_id" }
+    static var immediateSystemStart: Bool {
+        get { enabled && (UserDefaults.standard.object(forKey: "relay_lab_immediate_system_start") as? Bool ?? true) }
+        set { UserDefaults.standard.set(newValue, forKey: "relay_lab_immediate_system_start") }
+    }
 }
 
 @available(iOS 18.0, *)

@@ -502,7 +502,10 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let linkTest = UIButton(type: .system)
         linkTest.setTitle("断链15秒（验证缓存补交）", for: .normal)
         linkTest.addTarget(self, action: #selector(testLinkLoss), for: .touchUpInside)
-        let stack = UIStackView(arrangedSubviews: [controls] + (BLERecoveryLab.enabled ? [linkTest] : []) + [help, trialLabel, recordButton, table, logView])
+        let launchPath = UIButton(type: .system)
+        launchPath.setTitle("启动对照：切换立即请求／先鉴权", for: .normal)
+        launchPath.addTarget(self, action: #selector(toggleLaunchPath), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [controls] + (BLERecoveryLab.enabled ? [linkTest, launchPath] : []) + [help, trialLabel, recordButton, table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -534,6 +537,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             }
         } else {
             trialLabel.text = BLEProbe.shared.connectionDescription
+            if BLERecoveryLab.enabled { trialLabel.text! += "\n系统会话启动：\(BLERecoveryLab.immediateSystemStart ? "立即请求（无网络预检）" : "先鉴权再请求（原路径）")" }
             if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
             trialLabel.textColor = .label
         }
@@ -548,6 +552,17 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
 
     @objc private func scanBLE() { BLEProbe.shared.scan() }
     @objc private func testLinkLoss() { BLEProbe.shared.simulateLinkLoss() }
+    @objc private func toggleLaunchPath() {
+        if #available(iOS 17.4, *) {
+            guard VoiceConversationProbe.shared.canChangeLaunchPath else {
+                DeviceDiagnostics.shared.log("LAB 请先彻底结束系统会话，再切换启动对照")
+                return
+            }
+            BLERecoveryLab.immediateSystemStart.toggle()
+            DeviceDiagnostics.shared.log("LAB 启动对照已切换：\(BLERecoveryLab.immediateSystemStart ? "立即请求系统会话；上传仍需登录鉴权" : "先网络鉴权，再请求系统会话")")
+            refresh()
+        }
+    }
     @objc private func openVoiceProbe() {
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             DispatchQueue.main.async {

@@ -1,6 +1,7 @@
 import UIKit
 import AVFoundation
 import LiveCommunicationKit
+import CoreBluetooth
 
 // 独立实机验证入口，只从现有“设备测试”页面进入。
 // 服务端仍为用户自己的 Agent Relay；不注册虚构电话或自动来电。
@@ -25,6 +26,15 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var labCommand: BLELabCommand?
     private var labCompletion: ((Bool, String) -> Void)?
     private var labDeadline: DispatchWorkItem?
+    private var managerReady = false
+    var canChangeLaunchPath: Bool { callUUID == nil && !opening && !WearableService.shared.isRecording }
+
+    private func traceLaunch(_ stage: String, since start: TimeInterval) {
+        let app = UIApplication.shared
+        let remaining = app.backgroundTimeRemaining
+        let remainingText = remaining.isFinite && remaining < 100000 ? String(format: "%.2f", remaining) : "unlimited"
+        DeviceDiagnostics.shared.log("LAB CALL stage=\(stage) path=\(BLERecoveryLab.immediateSystemStart ? "immediate" : "preflight") ASK=\(BLERecoveryLab.usesASK) pid=\(ProcessInfo.processInfo.processIdentifier) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - start)) state=\(app.applicationState.rawValue) managerReady=\(managerReady) conversations=\(manager.conversations.count) backgroundTask=\(backgroundTask != .invalid) remaining=\(remainingText) bluetoothAuth=\(CBManager.authorization.rawValue) mic=\(AVAudioSession.sharedInstance().recordPermission.rawValue)")
+    }
 
     func executeLabCommand(_ command: BLELabCommand, completion: @escaping (Bool, String) -> Void) {
         guard !command.expired else { completion(false, "命令已过期"); return }
@@ -71,6 +81,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func configureManager() {
+        managerReady = false
         let config = ConversationManager.Configuration(
             ringtoneName: nil, iconTemplateImageData: nil,
             maximumConversationGroups: 1, maximumConversationsPerConversationGroup: 1,
@@ -123,8 +134,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         connectionDeadline = deadline
         DispatchQueue.main.asyncAfter(deadline: .now() + 22, execute: deadline)
         log("正在连接自己的 Agent Relay 语音会话")
+        let launchStartedAt = ProcessInfo.processInfo.systemUptime
+        traceLaunch("button", since: launchStartedAt)
         Task { @MainActor in
             do {
+                if !BLERecoveryLab.immediateSystemStart {
                 // 保留成功基线的鉴权预检，使用只读接口，不提前创建空会话。
                 guard let url = URL(string: "\(service.gatewayBaseURL)/api/bootstrap") else {
                     throw ProbeError.invalidEndpoint
@@ -143,7 +157,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     throw ProbeError.gateway((response as? HTTPURLResponse)?.statusCode ?? -1)
                 }
+                self.traceLaunch("preflight-complete", since: launchStartedAt)
+                }
                 guard attempt == self.generation else { return }
+                if let command = self.labCommand, command.expired {
+                    self.abortConnection("硬件命令已过期，不启动录音")
+                    return
+                }
                 // 不预创建服务端空会话：有效录音上传时再创建。
                 // 先配置类别，不自行激活。等待系统 didActivate 后才采音。
                 try audio.setCategory(.playAndRecord, mode: .voiceChat,
@@ -163,11 +183,17 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)
                 DeviceDiagnostics.shared.log("LCK pre-ASK 对照启动 state=\(UIApplication.shared.applicationState.rawValue) modes=\(Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") ?? [])")
+                self.traceLaunch("perform-start", since: launchStartedAt)
                 try await self.manager.perform([action])
                 guard attempt == self.generation else { return }
+                self.traceLaunch("perform-accepted", since: launchStartedAt)
                 self.opening = false
             } catch {
                 guard attempt == self.generation else { return }
+                self.traceLaunch("perform-or-preflight-failed", since: launchStartedAt)
+                let ns = error as NSError
+                let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+                DeviceDiagnostics.shared.log("LAB CALL error domain=\(ns.domain) code=\(ns.code) reason=\(ns.localizedFailureReason ?? "nil") debug=\(String(describing: ns.userInfo[NSDebugDescriptionErrorKey])) underlying=\(underlying.map { "\($0.domain):\($0.code):\($0.localizedDescription)" } ?? "nil")")
                 self.abortConnection("建立失败：\(error.localizedDescription)")
             }
         }
@@ -385,7 +411,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func conversationManagerDidBegin(_ manager: ConversationManager) {
-        DeviceDiagnostics.shared.log("LCK manager began")
+        DispatchQueue.main.async {
+            guard manager === self.manager else { return }
+            self.managerReady = true
+            DeviceDiagnostics.shared.log("LCK manager began ASK=\(BLERecoveryLab.usesASK) conversations=\(manager.conversations.count)")
+        }
     }
 
     func conversationManagerDidReset(_ manager: ConversationManager) {
@@ -397,7 +427,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
     }
 
-    func conversationManager(_ manager: ConversationManager, conversationChanged conversation: Conversation) {}
+    func conversationManager(_ manager: ConversationManager, conversationChanged conversation: Conversation) {
+        DispatchQueue.main.async {
+            guard manager === self.manager, BLERecoveryLab.enabled else { return }
+            DeviceDiagnostics.shared.log("LAB CALL changed uuid=\(conversation.uuid) conversations=\(manager.conversations.count)")
+        }
+    }
 
     func conversationManager(_ manager: ConversationManager, perform action: ConversationAction) {
         DispatchQueue.main.async {
