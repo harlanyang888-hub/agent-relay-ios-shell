@@ -36,6 +36,10 @@
 
 ## 本机抓取环境
 
+### sysdiagnose 已确认系统拒绝条件
+
+用户提供353102703字节诊断包，已在本机用 Mandiant macos-UnifiedLogs v0.7.0 解码，原始文件未上传到第三方。00:30:08 +0800 对应 UTC16:30:08，callservicesd明确记录 `Not allowing requested CXStartCallAction because user intent could not be validated`，并确认 hasVoIPBackgroundMode=1。紧邻检查为 callservicesd向tccd查询本App的kTCCServiceBluetoothAlways（请求30245.7），返回authValue=1、authReason=0；随后查询媒体状态Paused，再拒绝用户意图。16:21:26/29两次也重复同一序列。直接拒绝关卡已确认；ASK配件授权与通话服务通用蓝牙/用户意图检查之间的兼容问题为强推断，不能把隐私遮蔽的内部布尔条件当作已读到。详见 ASK-BACKGROUND-CALL-REPORT.md；未对外提交。
+
 ### 1.0.27 立即请求实验结果
 
 用户 PID30713 在前台完成授权/连接，managerDidBegin已回调，再锁屏。16:21:26与16:21:28两次命令均走 immediate 路径；perform-start 距收到命令0.161/0.209秒，错误6发生于0.225/0.305秒。managerReady=true、conversations=0、有限后台任务已申请，麦克风授权为granted；NSError reason/debug/underlying均nil。由此排除网络预检等待是失败的必要条件、manager未就绪、旧manager会话数已满等解释。bluetoothAuth=0记录的是通用授权值，不能因ASK配件已可通信却通用授权未确定，就认定缺权限为根因。下一步需要系统日志；继续增加相同App层错误输出或无证据调整录音设置不能提供系统拒绝条件。USB不是唯一方式，可手机本机生成sysdiagnose后网络导出。
