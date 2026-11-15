@@ -10,7 +10,15 @@ Cookie 随 WKWebView CookieStore 变化同步，只收集网关域名的未过�
 
 需验证：无通话图标时后台/锁屏首键建立；播放器播放中首键建立；后续多轮开始停止；未登录/断网失败可重试；重开 App 已绑定按钮重连；用户结束会话后按钮再建立；上传、转写、回复播报。
 
-iOS 18 手动划掉 App 后，普通 CoreBluetooth 恢复不能直接唤起。iOS 26 在通过 AccessorySetupKit 设置外设后新增相关唤起能力，但当前版本尚未接入 ASK；升级本身不等于可用，也没有验证恢复进程后后台创建 LCK 会话的完整效果。不要向用户承诺已经解决强退唤起。
+iOS 18 手动划掉 App 后，普通 CoreBluetooth 恢复不能直接唤起。iOS 26 在通过 AccessorySetupKit 设置外设后新增相关唤起能力；升级本身不等于可用，也没有验证恢复进程后后台创建 LCK 会话的完整效果。不要向用户承诺已经解决强退唤起。
+
+## 1.0.12 (13)：系统外设授权
+
+新增 AccessorySetupKit 会话与系统设备选择器，按专用服务 UUID 匹配。首次用户确认后从系统 accessories 列表取回 Bluetooth identifier，并建立 CoreBluetooth 连接与通知订阅。启动时激活 ASK，恢复系统授权列表；继续保留相同 CoreBluetooth restoration identifier。主动断开保留授权，但持久暂停重连，添加/重连时解除暂停；系统移除授权则取消连接并清理本地 identifier。连接失败或断开后有受控重试，不依赖 service 缓存来决定是否重连。
+
+首次升级需使用系统弹窗授权原有模拟器一次，旧的 App 内手动连接不是 ASK 授权。不要用变更 MAC 的陌生设备直接替换旧授权；Windows 模拟器重启可能更换身份，应先保持它运行，再测 App 生命周期。真实 ESP32 要实现稳定设备身份。
+
+验收分开记录：iOS 18 系统授权/重开重连；iOS 26 强退后实际是否收到 BluetoothCentrals 启动键、ASK 授权恢复、重连/重新订阅、真实 BLE 按键触发后台建立 LCK。重启手机先完成首次解锁。断开、取消授权、蓝牙关闭、设备没电和认证失效不保证能采音。当前只完成代码接入与编译验证，不能当作强退录音已通过。
 
 官方依据：
 https://developer.apple.com/documentation/technotes/tn3115-bluetooth-state-restoration-app-relaunch-rules

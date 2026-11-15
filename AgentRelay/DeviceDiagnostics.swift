@@ -1,6 +1,72 @@
 import UIKit
 import CoreBluetooth
 import AVFoundation
+import AccessorySetupKit
+
+@available(iOS 18.0, *)
+private final class HardwareAccessoryBinding {
+    let session = ASAccessorySession()
+    private(set) var ready = false
+    var onAuthorized: ((UUID) -> Void)?
+    var onRemoved: ((UUID) -> Void)?
+    var onChange: (() -> Void)?
+    private(set) var status = "正在读取系统设备授权"
+    private var presenting = false
+
+    func start() {
+        session.activate(on: .main) { [weak self] event in
+            guard let self = self else { return }
+            DeviceDiagnostics.shared.log("ASK event=\(event.eventType.rawValue) error=\(String(describing: event.error))")
+            switch event.eventType {
+            case .activated:
+                self.ready = true
+                self.status = self.session.accessories.isEmpty ? "尚未系统授权，请添加按钮" : "系统设备授权已恢复"
+                let saved = UserDefaults.standard.string(forKey: "relay_dedicated_button_id")
+                let accessory = self.session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved }) ?? self.session.accessories.first
+                if let id = accessory?.bluetoothIdentifier { self.onAuthorized?(id) }
+            case .accessoryAdded, .accessoryChanged:
+                if let id = event.accessory?.bluetoothIdentifier {
+                    self.status = "设备已获系统授权"
+                    self.onAuthorized?(id)
+                }
+            case .accessoryRemoved:
+                self.status = "系统设备授权已移除"
+                if let id = event.accessory?.bluetoothIdentifier { self.onRemoved?(id) }
+            case .invalidated:
+                self.ready = false
+                self.status = "系统设备会话失效，请重新打开 App"
+            case .pickerDidDismiss:
+                self.presenting = false
+            default: break
+            }
+            self.onChange?()
+        }
+    }
+
+    func addOrReconnect() {
+        guard ready, !presenting else { return }
+        UserDefaults.standard.set(false, forKey: "relay_button_connection_paused")
+        let saved = UserDefaults.standard.string(forKey: "relay_dedicated_button_id")
+        if let id = session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved })?.bluetoothIdentifier {
+            onAuthorized?(id)
+            return
+        }
+        let descriptor = ASDiscoveryDescriptor()
+        descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
+        let image = UIImage(systemName: "dot.radiowaves.left.and.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 96))!
+            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+        let item = ASPickerDisplayItem(name: "Agent Relay 语音按钮", productImage: image, descriptor: descriptor)
+        presenting = true
+        session.showPicker(for: [item]) { [weak self] error in
+            self?.presenting = false
+            if let error = error {
+                self?.status = "设备授权未完成：\(error.localizedDescription)"
+                DeviceDiagnostics.shared.log("ASK picker failed: \(error.localizedDescription)")
+            }
+            self?.onChange?()
+        }
+    }
+}
 
 // 仅记录设备和录音状态，不记录 Cookie、音频或会话内容。
 final class DeviceDiagnostics {
@@ -51,10 +117,15 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let buttonEvent = CBUUID(string: "A8D70101-6B44-4E93-A2D5-73F2A34B8180")
     private var buttonSession: Data?
     private var buttonSequence: UInt32 = 0
+    private var accessoryBinding: AnyObject?
+    private var reconnectWork: DispatchWorkItem?
     var onChange: (() -> Void)?
     var canRunButtonTrial: Bool { selected?.state == .connected && notificationsReady }
     var connectionDescription: String {
-        guard let peripheral = selected else { return "尚未连接设备" }
+        guard let peripheral = selected else {
+            if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding { return binding.status }
+            return "尚未连接设备"
+        }
         return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")"
     }
 
@@ -63,6 +134,22 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         central = CBCentralManager(delegate: self, queue: .main, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "agent-relay-ble-probe-v1"
         ])
+        if #available(iOS 18.0, *) {
+            let binding = HardwareAccessoryBinding()
+            accessoryBinding = binding
+            binding.onAuthorized = { [weak self] id in
+                UserDefaults.standard.set(id.uuidString, forKey: "relay_dedicated_button_id")
+                self?.restoreDedicatedButton()
+            }
+            binding.onRemoved = { [weak self] id in
+                guard UserDefaults.standard.string(forKey: "relay_dedicated_button_id") == id.uuidString else { return }
+                self?.disconnect()
+                UserDefaults.standard.removeObject(forKey: "relay_dedicated_button_id")
+                self?.onChange?()
+            }
+            binding.onChange = { [weak self] in self?.onChange?() }
+            binding.start()
+        }
         volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.old, .new]) { _, change in
             let oldValue = change.oldValue ?? -1
             let newValue = change.newValue ?? -1
@@ -75,6 +162,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func scan() {
+        if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding {
+            binding.addOrReconnect()
+            return
+        }
         scanningRequested = true
         guard central.state == .poweredOn else {
             DeviceDiagnostics.shared.log("BLE 等待蓝牙就绪，state=\(central.state.rawValue)")
@@ -98,6 +189,14 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func connect(_ peripheral: CBPeripheral) {
+        if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding {
+            guard binding.session.accessories.contains(where: { $0.bluetoothIdentifier == peripheral.identifier }) else {
+                DeviceDiagnostics.shared.log("BLE 设备尚未系统授权，请添加按钮")
+                return
+            }
+        }
+        reconnectWork?.cancel()
+        UserDefaults.standard.set(false, forKey: "relay_button_connection_paused")
         stopScan()
         if selected?.identifier == peripheral.identifier, peripheral.state == .connected || peripheral.state == .connecting { return }
         BLEButtonTrial.shared.finish(reason: "更换或重新连接设备")
@@ -113,33 +212,51 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func disconnect() {
+        reconnectWork?.cancel()
+        stopScan()
+        UserDefaults.standard.set(true, forKey: "relay_button_connection_paused")
         guard let peripheral = selected else { return }
         BLEButtonTrial.shared.finish(reason: "用户断开连接")
         central.cancelPeripheralConnection(peripheral)
         selected = nil
-        UserDefaults.standard.removeObject(forKey: "relay_dedicated_button_id")
         notificationsReady = false
         DeviceDiagnostics.shared.log("BLE 已请求断开")
+        onChange?()
+    }
+
+    private func restoreDedicatedButton() {
+        guard central.state == .poweredOn, !UserDefaults.standard.bool(forKey: "relay_button_connection_paused"),
+              let text = UserDefaults.standard.string(forKey: "relay_dedicated_button_id"),
+              let id = UUID(uuidString: text) else { return }
+        if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding {
+            guard binding.ready, binding.session.accessories.contains(where: { $0.bluetoothIdentifier == id }) else { return }
+        }
+        guard let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first else {
+            DeviceDiagnostics.shared.log("BLE 已保存授权但暂无法取回外设，等待系统恢复")
+            return
+        }
+        DeviceDiagnostics.shared.log("BLE 恢复已授权按钮 \(id)")
+        if peripheral.state == .connected {
+            selected = peripheral
+            peripheral.delegate = self
+            peripheral.discoverServices([buttonService])
+        } else { connect(peripheral) }
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         DeviceDiagnostics.shared.log("BLE state=\(central.state.rawValue)")
-        if central.state == .poweredOn, selected == nil,
-           let text = UserDefaults.standard.string(forKey: "relay_dedicated_button_id"),
-           let id = UUID(uuidString: text),
-           let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first {
-            DeviceDiagnostics.shared.log("BLE 自动恢复已绑定电脑按钮 \(id)")
-            connect(peripheral)
-        }
+        if central.state == .poweredOn { restoreDedicatedButton() }
         if central.state == .poweredOn, scanningRequested { scan() }
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
-        selected = restored.first
-        for peripheral in restored {
+        let saved = UserDefaults.standard.string(forKey: "relay_dedicated_button_id")
+        selected = restored.first(where: { $0.identifier.uuidString == saved })
+        for peripheral in restored where peripheral.identifier.uuidString == saved {
             peripheral.delegate = self
-            if peripheral.state == .connected { peripheral.discoverServices(nil) }
+            if UserDefaults.standard.bool(forKey: "relay_button_connection_paused") { central.cancelPeripheralConnection(peripheral); selected = nil }
+            else if peripheral.state == .connected { peripheral.discoverServices([buttonService]) }
         }
         DeviceDiagnostics.shared.log("BLE 恢复外设数=\(restored.count)")
     }
@@ -175,6 +292,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         DeviceDiagnostics.shared.log("BLE 连接失败 \(String(describing: error))")
+        scheduleReconnect(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -185,10 +303,20 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         DeviceDiagnostics.shared.log("BLE 断开 \(peripheral.identifier) error=\(String(describing: error))")
         if peripheral.identifier == selected?.identifier,
-           peripheral.services?.contains(where: { $0.uuid == buttonService }) == true {
+           UserDefaults.standard.string(forKey: "relay_dedicated_button_id") == peripheral.identifier.uuidString {
             DeviceDiagnostics.shared.log("BLE 专用按钮等待重连")
-            central.connect(peripheral, options: nil)
+            scheduleReconnect(peripheral)
         }
+    }
+
+    private func scheduleReconnect(_ peripheral: CBPeripheral) {
+        reconnectWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.selected?.identifier == peripheral.identifier else { return }
+            self.restoreDedicatedButton()
+        }
+        reconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {

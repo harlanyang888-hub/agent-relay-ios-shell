@@ -11,9 +11,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var pendingRecordingContext: [String: String] = [:]
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        if launchOptions?[.bluetoothCentrals] != nil || UserDefaults.standard.string(forKey: "relay_dedicated_button_id") != nil {
-            _ = BLEProbe.shared
-        }
+        // 即使本地缓存丢失，也从系统外设授权列表恢复；不建立音频会话。
+        _ = BLEProbe.shared
         DeviceDiagnostics.shared.log("App 启动 state=\(application.applicationState.rawValue)")
         DeviceDiagnostics.shared.log("App launch keys=\(launchOptions?.keys.map { $0.rawValue } ?? [])")
         window = UIWindow(frame: UIScreen.main.bounds)

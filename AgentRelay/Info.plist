@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.11</string>
+	<string>1.0.12</string>
 	<key>CFBundleVersion</key>
-	<string>12</string>
+	<string>13</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>
@@ -78,5 +78,9 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSAccessorySetupKitSupports</key>
+	<array><string>Bluetooth</string></array>
+	<key>NSAccessorySetupBluetoothServices</key>
+	<array><string>A8D70100-6B44-4E93-A2D5-73F2A34B8180</string></array>
 </dict>
 </plist>
