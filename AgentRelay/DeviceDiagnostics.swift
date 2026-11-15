@@ -71,22 +71,16 @@ private final class HardwareAccessoryBinding {
         }
         UserDefaults.standard.set(false, forKey: "relay_button_connection_paused")
         let saved = UserDefaults.standard.string(forKey: "relay_dedicated_button_id")
-        if let id = session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved })?.bluetoothIdentifier {
-            onAuthorized?(id)
-            return
-        }
+        // “添加”始终允许选择当前设备；旧设备重连由后台恢复逻辑负责。
         let image = UIImage(systemName: "dot.radiowaves.left.and.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 96))!
             .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
         let productImage = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { _ in
             image.draw(in: CGRect(x: 16, y: 16, width: 128, height: 128))
         }
-        var items = ["RN12108", "AgentRelay"].map { name -> ASPickerDisplayItem in
-            let descriptor = ASDiscoveryDescriptor()
-            descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
-            descriptor.bluetoothNameSubstring = name
-            return ASPickerDisplayItem(name: name == "RN12108" ? "Agent Relay 电脑按钮" : "Agent Relay 语音按钮", productImage: productImage, descriptor: descriptor)
-        }
-        if let saved = saved, let id = UUID(uuidString: saved) {
+        let discovery = ASDiscoveryDescriptor()
+        discovery.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
+        var items = [ASPickerDisplayItem(name: "Agent Relay 语音按钮", productImage: productImage, descriptor: discovery)]
+        if session.accessories.isEmpty, let saved = saved, let id = UUID(uuidString: saved) {
             let descriptor = ASDiscoveryDescriptor()
             descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
             let migration = ASMigrationDisplayItem(name: "之前连接的 Agent Relay 按钮", productImage: productImage, descriptor: descriptor)
@@ -95,7 +89,8 @@ private final class HardwareAccessoryBinding {
             migrating = true
             DeviceDiagnostics.shared.log("ASK 迁移之前连接的设备 id=\(id)")
         } else {
-            DeviceDiagnostics.shared.log("ASK 无旧设备标识，仅使用广播发现")
+            migrating = false
+            DeviceDiagnostics.shared.log("ASK 发现当前广播（专用服务 UUID，不按缓存名称筛选），已有授权数=\(session.accessories.count)")
         }
         presenting = true
         status = "正在请求系统授权，等待设备选择器"
@@ -184,7 +179,13 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             if #available(iOS 18.0, *), let binding = accessoryBinding as? HardwareAccessoryBinding { return binding.status }
             return "尚未连接设备"
         }
-        return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")"
+        let connection: String
+        switch peripheral.state {
+        case .connected: connection = "已连接"
+        case .connecting: connection = "已授权，正在连接；若设备身份已变化，请添加当前设备"
+        default: connection = "未连接"
+        }
+        return "\(peripheral.name ?? "未命名") · \(connection) · 通知\(notificationsReady ? "已就绪" : "未就绪")"
     }
 
     private override init() {
@@ -193,6 +194,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             let binding = HardwareAccessoryBinding()
             accessoryBinding = binding
             binding.onAuthorized = { [weak self] id in
+                if let previous = self?.selected, previous.identifier != id {
+                    self?.central?.cancelPeripheralConnection(previous)
+                    self?.selected = nil
+                    self?.notificationsReady = false
+                }
                 UserDefaults.standard.set(id.uuidString, forKey: "relay_dedicated_button_id")
                 self?.restoreDedicatedButton()
             }
@@ -320,6 +326,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             peripheral.delegate = self
             peripheral.discoverServices([buttonService])
         } else { connect(peripheral) }
+        onChange?()
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
