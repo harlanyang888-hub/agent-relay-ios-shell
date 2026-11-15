@@ -85,30 +85,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         log("正在连接自己的 Agent Relay 语音会话")
         Task { @MainActor in
             do {
-                guard let url = URL(string: "\(service.gatewayBaseURL)/api/conversations") else {
-                    throw ProbeError.invalidEndpoint
-                }
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.timeoutInterval = 15
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue(service.gatewayBaseURL, forHTTPHeaderField: "Origin")
-                request.setValue(cookie, forHTTPHeaderField: "Cookie")
-                request.httpBody = try JSONSerialization.data(withJSONObject: [
-                    "hostId": "ubuntu", "project": "ubuntu-antigravity",
-                    "cwd": "/home/complicated/project/voice-hub", "title": "穿戴语音会话"
-                ])
-                let (data, response) = try await URLSession.shared.data(for: request)
                 guard attempt == self.generation else { return }
-                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-                      let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let conversationId = json["id"] as? String else {
-                    throw ProbeError.gateway((response as? HTTPURLResponse)?.statusCode ?? -1)
-                }
+                // 首次有效录音发送时由语音上传接口创建服务端会话，启动失败不留空条目。
                 // 先配置类别，不自行激活。等待系统 didActivate 后才采音。
                 try audio.setCategory(.playAndRecord, mode: .voiceChat,
                     options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
-                service.enterCommunicationMode(conversationId: conversationId)
+                service.enterCommunicationMode()
                 service.communicationButtonHandler = { [weak self] name in
                     self?.handleMediaButton(name)
                 }
@@ -118,7 +100,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 let uuid = UUID()
                 self.callUUID = uuid
                 self.wantsRecording = true
-                self.log("服务端会话已建立，等待系统允许采音")
+                self.log("请求系统语音会话；实际发送录音后才创建 Agent 会话")
                 let action = StartConversationAction(conversationUUID: uuid,
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)

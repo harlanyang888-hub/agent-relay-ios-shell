@@ -75,6 +75,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         interruptedDate = nil
     }
     public var communicationConversationId: String?
+    private var communicationGeneration = UUID()
     public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false
     public private(set) var currentDeviceName = "扬声器 / 听筒"
@@ -550,9 +551,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     // MARK: - 原生麦克风录音控制
-    public func enterCommunicationMode(conversationId: String) {
+    public func enterCommunicationMode(conversationId: String? = nil) {
         stopListening()
         communicationMode = true
+        communicationGeneration = UUID()
         communicationConversationId = conversationId
         shortcutDestination = [:]
         registerRemoteCommands()
@@ -571,6 +573,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func leaveCommunicationMode() {
+        communicationGeneration = UUID()
         if isRecording { stopRecording(shouldProcess: false) }
         stopPolling()
         communicationPlaybackHandler = nil
@@ -853,7 +856,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
 
-        // 每次录音均为全新独立会话，默认工作目录定向至 voice-hub 语音中枢
+        // 第一轮实际上传时创建会话，成功后复用返回的标识。
+        let uploadGeneration = communicationMode ? communicationGeneration : nil
         var payload: [String: Any] = [
             "audioBase64": audioBase64,
             "filename": "wearable_voice_\(Int(Date().timeIntervalSince1970)).m4a",
@@ -921,6 +925,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let convId = json["conversationId"] as? String {
                 DispatchQueue.main.async {
+                    if let uploadGeneration = uploadGeneration,
+                       self.communicationMode, self.communicationGeneration == uploadGeneration {
+                        self.communicationConversationId = convId
+                    } else if uploadGeneration != nil {
+                        // 已结束或更换会话，旧上传结果不影响新会话。
+                        return
+                    }
                     self.updateNowPlayingInfo(statusText: "🟡 已发送，Agent 正在思考...")
                     self.startPollingAgentReply(conversationId: convId)
                 }
