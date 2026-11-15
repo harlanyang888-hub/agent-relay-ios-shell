@@ -23,3 +23,7 @@
 - 蓝牙到通话服务之间存在后台执行断档，必须管理有限后台任务；本项目 connect 已申请，仍需核对实际拒绝日志：https://developer.apple.com/forums/thread/804205
 
 本记录不是根因已定位或修复完成的声明。
+
+## 本机抓取环境
+
+pymobiledevice3 11.55.0 已安装到仓库外独立 venv，syslog live 的过滤命令已检查。当前 USB 探测无法连接 usbmuxd；本机没有 Apple Mobile Device 服务。已通过 winget 从苹果官网下载 iTunes 12.13.12.3（SHA256 221a24203f6182b7dc0e18055b1e9338a0c3c992c7fefe6b3be0460caf29db4d），只提取 AppleMobileDeviceSupport64.msi，并检查签名为有效 Apple Inc.。安装退出1603，MSI明确记录当前进程没有全机安装管理员权限。未绕过系统权限。仓库外 builds/Install-Apple-USB-Support.cmd 已准备，需用户右键以管理员身份运行后连接并信任 iPhone，再执行 USB probe 和短时过滤抓取。尚未采集任何手机系统日志。
