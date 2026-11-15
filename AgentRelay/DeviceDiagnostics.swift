@@ -13,6 +13,7 @@ private final class HardwareAccessoryBinding {
     var onBeforePicker: (() -> Void)?
     private(set) var status = "正在读取系统设备授权"
     private var presenting = false
+    private var migrating = false
 
     func start() {
         session.activate(on: .main) { [weak self] event in
@@ -26,6 +27,7 @@ private final class HardwareAccessoryBinding {
                 let accessory = self.session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved }) ?? self.session.accessories.first
                 if let id = accessory?.bluetoothIdentifier { self.onAuthorized?(id) }
             case .accessoryAdded, .accessoryChanged:
+                guard !self.migrating else { self.onChange?(); return }
                 if let id = event.accessory?.bluetoothIdentifier {
                     self.status = "设备已获系统授权"
                     self.onAuthorized?(id)
@@ -41,6 +43,10 @@ private final class HardwareAccessoryBinding {
                 if self.session.accessories.isEmpty { self.status = "尚未完成系统授权，请重试添加按钮" }
             case .pickerDidPresent:
                 self.status = "请在苹果系统弹窗中确认设备"
+            case .migrationComplete:
+                self.migrating = false
+                self.status = "旧设备已迁移到系统授权"
+                if let id = self.session.accessories.first?.bluetoothIdentifier { self.onAuthorized?(id) }
             default: break
             }
             self.onChange?()
@@ -85,7 +91,8 @@ private final class HardwareAccessoryBinding {
             descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
             let migration = ASMigrationDisplayItem(name: "之前连接的 Agent Relay 按钮", productImage: productImage, descriptor: descriptor)
             migration.peripheralIdentifier = id
-            items.insert(migration, at: 0)
+            items = [migration]
+            migrating = true
             DeviceDiagnostics.shared.log("ASK 迁移之前连接的设备 id=\(id)")
         } else {
             DeviceDiagnostics.shared.log("ASK 无旧设备标识，仅使用广播发现")
@@ -102,6 +109,7 @@ private final class HardwareAccessoryBinding {
             DeviceDiagnostics.shared.log("ASK picker completion error=\(String(describing: error))")
             self?.presenting = false
             if let error = error {
+                self?.migrating = false
                 self?.status = "设备授权未完成：\(error.localizedDescription)"
                 let ns = error as NSError
                 DeviceDiagnostics.shared.log("ASK picker failed domain=\(ns.domain) code=\(ns.code) state=\(UIApplication.shared.applicationState.rawValue) detail=\(ns.userInfo)")
