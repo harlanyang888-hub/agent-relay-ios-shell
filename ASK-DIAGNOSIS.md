@@ -36,4 +36,8 @@
 
 ## 本机抓取环境
 
+### 1.0.27 立即请求实验结果
+
+用户 PID30713 在前台完成授权/连接，managerDidBegin已回调，再锁屏。16:21:26与16:21:28两次命令均走 immediate 路径；perform-start 距收到命令0.161/0.209秒，错误6发生于0.225/0.305秒。managerReady=true、conversations=0、有限后台任务已申请，麦克风授权为granted；NSError reason/debug/underlying均nil。由此排除网络预检等待是失败的必要条件、manager未就绪、旧manager会话数已满等解释。bluetoothAuth=0记录的是通用授权值，不能因ASK配件已可通信却通用授权未确定，就认定缺权限为根因。下一步需要系统日志；继续增加相同App层错误输出或无证据调整录音设置不能提供系统拒绝条件。USB不是唯一方式，可手机本机生成sysdiagnose后网络导出。
+
 pymobiledevice3 11.55.0 已安装到仓库外独立 venv，syslog live 的过滤命令已检查。当前 USB 探测无法连接 usbmuxd；本机没有 Apple Mobile Device 服务。已通过 winget 从苹果官网下载 iTunes 12.13.12.3（SHA256 221a24203f6182b7dc0e18055b1e9338a0c3c992c7fefe6b3be0460caf29db4d），只提取 AppleMobileDeviceSupport64.msi，并检查签名为有效 Apple Inc.。安装退出1603，MSI明确记录当前进程没有全机安装管理员权限。未绕过系统权限。仓库外 builds/Install-Apple-USB-Support.cmd 已准备，需用户右键以管理员身份运行后连接并信任 iPhone，再执行 USB probe 和短时过滤抓取。尚未采集任何手机系统日志。
