@@ -31,3 +31,7 @@ https://developer.apple.com/forums/thread/806013
 用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。
 
 必须实测系统授权弹窗，以及升级后的页面/URL 打开、后台 BLE 恢复。550 的唯一根因尚未在设备上确认，不把编译成功当成修复已验收。
+
+## 1.0.14 (15)：迁移已知设备与授权等待诊断
+
+1.0.13 截图显示 picker request 已在 active scene 发起，但未看到 pickerDidPresent/失败回调；电脑仍广播、无订阅。Windows GATT 模拟器不能保证按 RN12108 名称广播，连接后读取的名称不能直接作为广播匹配依据。已有 relay_dedicated_button_id 时，增加 ASMigrationDisplayItem/peripheralIdentifier，使用官方迁移入口请求系统授权；首次未留下标识的场景仍走广告发现，尚不能认定兼容 Windows。显示请求/弹窗/超时等待状态，记录回调，避免重复点击静默无响应。不绕过系统授权，也不冒称迁移一定成功；要在用户设备上验收。

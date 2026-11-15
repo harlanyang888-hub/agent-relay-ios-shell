@@ -38,6 +38,9 @@ private final class HardwareAccessoryBinding {
                 self.status = "系统设备会话失效，请重新打开 App"
             case .pickerDidDismiss:
                 self.presenting = false
+                if self.session.accessories.isEmpty { self.status = "尚未完成系统授权，请重试添加按钮" }
+            case .pickerDidPresent:
+                self.status = "请在苹果系统弹窗中确认设备"
             default: break
             }
             self.onChange?()
@@ -45,7 +48,14 @@ private final class HardwareAccessoryBinding {
     }
 
     func addOrReconnect() {
-        guard ready, !presenting else { return }
+        guard ready else {
+            DeviceDiagnostics.shared.log("ASK 尚未激活，暂不能显示授权")
+            return
+        }
+        guard !presenting else {
+            DeviceDiagnostics.shared.log("ASK 正在等待系统选择器，请勿重复添加")
+            return
+        }
         guard UIApplication.shared.applicationState == .active,
               UIApplication.shared.connectedScenes.contains(where: { $0.activationState == .foregroundActive }) else {
             status = "请保持穿戴设备页面在前台，再添加按钮"
@@ -64,19 +74,32 @@ private final class HardwareAccessoryBinding {
         let productImage = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { _ in
             image.draw(in: CGRect(x: 16, y: 16, width: 128, height: 128))
         }
-        let items = ["RN12108", "AgentRelay"].map { name -> ASPickerDisplayItem in
+        var items = ["RN12108", "AgentRelay"].map { name -> ASPickerDisplayItem in
             let descriptor = ASDiscoveryDescriptor()
             descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
             descriptor.bluetoothNameSubstring = name
             return ASPickerDisplayItem(name: name == "RN12108" ? "Agent Relay 电脑按钮" : "Agent Relay 语音按钮", productImage: productImage, descriptor: descriptor)
         }
+        if let saved = saved, let id = UUID(uuidString: saved) {
+            let descriptor = ASDiscoveryDescriptor()
+            descriptor.bluetoothServiceUUID = CBUUID(string: "A8D70100-6B44-4E93-A2D5-73F2A34B8180")
+            let migration = ASMigrationDisplayItem(name: "之前连接的 Agent Relay 按钮", productImage: productImage, descriptor: descriptor)
+            migration.peripheralIdentifier = id
+            items.insert(migration, at: 0)
+            DeviceDiagnostics.shared.log("ASK 迁移之前连接的设备 id=\(id)")
+        } else {
+            DeviceDiagnostics.shared.log("ASK 无旧设备标识，仅使用广播发现")
+        }
         presenting = true
+        status = "正在请求系统授权，等待设备选择器"
+        onChange?()
         onBeforePicker?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             guard let self = self else { return }
             guard UIApplication.shared.applicationState == .active else { self.presenting = false; return }
             DeviceDiagnostics.shared.log("ASK picker request state=\(UIApplication.shared.applicationState.rawValue) activeScenes=\(UIApplication.shared.connectedScenes.filter { $0.activationState == .foregroundActive }.count)")
             self.session.showPicker(for: items) { [weak self] error in
+            DeviceDiagnostics.shared.log("ASK picker completion error=\(String(describing: error))")
             self?.presenting = false
             if let error = error {
                 self?.status = "设备授权未完成：\(error.localizedDescription)"
@@ -85,6 +108,12 @@ private final class HardwareAccessoryBinding {
             }
             self?.onChange?()
             }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self = self, self.presenting, self.session.accessories.isEmpty else { return }
+            self.status = "系统授权仍未完成，请复制日志；暂不能将此设备视为已绑定"
+            DeviceDiagnostics.shared.log("ASK 选择器等待超过30秒，未获得系统授权 state=\(UIApplication.shared.applicationState.rawValue)")
+            self.onChange?()
         }
     }
 }
