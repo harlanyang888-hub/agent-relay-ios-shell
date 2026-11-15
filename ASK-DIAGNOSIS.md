@@ -24,6 +24,16 @@
 
 本记录不是根因已定位或修复完成的声明。
 
+## 同进程对照和下一项单变量实验
+
+用户补充同一 PID 30569 的完整对照：16:07:09 前台新建并录音成功；16:07:40 后台恢复已有会话成功；16:08:28 完全结束系统会话；16:08:38 后台新建立即 invalidAction。由此排除“仅冷启动/蓝牙恢复初始化导致失败”的解释。失败条件已收窄到 ASK 路径后台新建系统会话，但仍没有系统内部拒绝理由。
+
+实际解包核对：1.0.24 和 1.0.25 的 AgentRelay 可执行文件 SHA256 均为 7515144e0de23f284334a66d0f71d8e11789491549fdc55aea0137e83d8cbc0a。SDK 都是 iphoneos18.5 / Xcode16F6、最低iOS15，audio/voip/bluetooth-central、麦克风和通用蓝牙声明相同。Info.plist 只在版本号、ASK 三项声明和运行开关不同。这排除不同编译录音代码、漏配 voip 作为两包差异的解释。
+
+1.0.27 ASK（legacy对照为1.0.26）新增实验开关：默认立即请求系统会话，取消请求前的网络预检等待；另一路保持原 GET /api/bootstrap 后启动。两路都保留本地登录检查、录音上传鉴权、同样的系统动作和采音回调。不预建系统会话。设备页可在完全结束系统会话后切换，不用重装或接USB。
+
+日志增加 LAB CALL 阶段、单调时钟耗时、managerDidBegin 标记、manager中的会话数量、后台任务状态/剩余时间、CBManager授权值、麦克风授权、NSError domain/code/reason/debug/underlying。该开关不被描述成已证实修复。测试必须在同一进程、同一蓝牙连接中，分别从无系统会话的锁屏状态尝试两条启动路径；每次复测先完全结束系统会话，不能拿“恢复已有会话”当“新建成功”。
+
 ## 本机抓取环境
 
 pymobiledevice3 11.55.0 已安装到仓库外独立 venv，syslog live 的过滤命令已检查。当前 USB 探测无法连接 usbmuxd；本机没有 Apple Mobile Device 服务。已通过 winget 从苹果官网下载 iTunes 12.13.12.3（SHA256 221a24203f6182b7dc0e18055b1e9338a0c3c992c7fefe6b3be0460caf29db4d），只提取 AppleMobileDeviceSupport64.msi，并检查签名为有效 Apple Inc.。安装退出1603，MSI明确记录当前进程没有全机安装管理员权限。未绕过系统权限。仓库外 builds/Install-Apple-USB-Support.cmd 已准备，需用户右键以管理员身份运行后连接并信任 iPhone，再执行 USB probe 和短时过滤抓取。尚未采集任何手机系统日志。
