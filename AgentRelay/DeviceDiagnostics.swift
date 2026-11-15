@@ -169,6 +169,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.selected?.identifier == peripheral.identifier else { return }
             self.testDisconnectUntil = nil
+            if peripheral.state == .connected || peripheral.state == .connecting {
+                self.finishDisconnectTest()
+                return
+            }
             self.central?.connect(peripheral, options: self.connectionOptions)
             DeviceDiagnostics.shared.log("LAB 已提交恢复连接请求，等待系统连接回调")
         }
@@ -263,6 +267,12 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func connect(_ peripheral: CBPeripheral) {
         if BLERecoveryLab.usesASK, #available(iOS 18.0, *), let binding = accessoryBinding as? RecoveryAccessoryBinding {
             guard binding.session.accessories.contains(where: { $0.bluetoothIdentifier == peripheral.identifier }) else { return }
+        }
+        if testDisconnectUntil != nil {
+            testReconnect?.cancel()
+            testDisconnectUntil = nil
+            finishDisconnectTest()
+            DeviceDiagnostics.shared.log("LAB 手动连接取消15秒断链测试，避免重复恢复连接")
         }
         stopScan()
         if selected?.identifier == peripheral.identifier, peripheral.state == .connected || peripheral.state == .connecting { return }
