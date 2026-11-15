@@ -444,6 +444,9 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             notificationsReady = characteristic.isNotifying && error == nil
         }
         DeviceDiagnostics.shared.log("BLE 订阅 \(characteristic.uuid) enabled=\(characteristic.isNotifying) error=\(String(describing: error))")
+        if characteristic.uuid == buttonEvent, notificationsReady {
+            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.prepareButtonStandbyIfNeeded() }
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -527,7 +530,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         trialLabel.numberOfLines = 0
         trialLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         let help = UILabel()
-        help.text = "首次使用先登录、授权麦克风并添加按钮。之后按硬件键自动建立语音会话并开始说话，再按结束本轮并发送。锁屏和其他 App 中也可尝试触发。iOS 18 手动划掉 App 后需重新打开。"
+        help.text = "首次登录、授权麦克风并连接按钮后，App 自动准备暂停的系统语音会话，待命时不录音。显示待命已准备后可锁屏，按硬件键开始说话，再按结束并发送。结束会话会停止待命；iOS 18 手动划掉 App 后需重新打开。"
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
@@ -583,6 +586,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             DispatchQueue.main.async {
                 DeviceDiagnostics.shared.log(granted ? "麦克风已授权；连接按钮后可按硬件键开始" : "麦克风未授权，请在系统设置中允许")
+                if granted, #available(iOS 17.4, *) { VoiceConversationProbe.shared.prepareButtonStandbyIfNeeded() }
             }
         }
     }

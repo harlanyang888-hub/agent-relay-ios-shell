@@ -242,6 +242,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             }
             let cookieHeaders = relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
             WearableService.shared.authCookie = cookieHeaders.isEmpty ? nil : cookieHeaders
+            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.prepareButtonStandbyIfNeeded() }
         }
     }
 

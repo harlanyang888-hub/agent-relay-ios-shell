@@ -23,6 +23,9 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var confirmedTimer: Timer?
     private var generation = UUID()
     private var connectionDeadline: DispatchWorkItem?
+    private var preparingStandby = false
+    private var standbyAttempted = false
+    private var standbySuppressed = false
 
     private override init() {
         super.init()
@@ -45,7 +48,22 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DeviceDiagnostics.shared.log("LCK \(text) state=\(UIApplication.shared.applicationState.rawValue)")
     }
 
-    func connect() {
+    func applicationBecameActive() {
+        standbyAttempted = false
+        prepareButtonStandbyIfNeeded()
+    }
+
+    func prepareButtonStandbyIfNeeded() {
+        guard UIApplication.shared.applicationState == .active,
+              BLEProbe.shared.canRunButtonTrial,
+              !standbySuppressed, !standbyAttempted, !opening, callUUID == nil,
+              AVAudioSession.sharedInstance().recordPermission == .granted,
+              let cookie = WearableService.shared.authCookie, !cookie.isEmpty else { return }
+        standbyAttempted = true
+        connect(recordImmediately: false)
+    }
+
+    func connect(recordImmediately: Bool = true) {
         guard !opening, callUUID == nil else { return }
         let service = WearableService.shared
         guard !service.isRecording else { log("请先结束当前录音"); return }
@@ -69,6 +87,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
         service.stopListening()
         opening = true
+        preparingStandby = !recordImmediately
         generation = UUID()
         let attempt = generation
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Hardware voice connection") { [weak self] in
@@ -77,7 +96,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
         let deadline = DispatchWorkItem { [weak self] in
             guard let self = self, self.generation == attempt,
-                  self.opening || (self.wantsRecording && !self.audioActive) else { return }
+                  self.opening || self.preparingStandby || (self.wantsRecording && !self.audioActive) else { return }
             self.abortConnection("系统未能及时建立会话，请重新按键")
         }
         connectionDeadline = deadline
@@ -99,8 +118,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 }
                 let uuid = UUID()
                 self.callUUID = uuid
-                self.wantsRecording = true
-                self.log("请求系统语音会话；实际发送录音后才创建 Agent 会话")
+                self.wantsRecording = recordImmediately
+                if !recordImmediately, UIApplication.shared.applicationState != .active {
+                    self.abortConnection("待命准备未完成，请打开 App 等待按钮待命就绪")
+                    return
+                }
+                self.log(recordImmediately ? "请求系统语音会话；实际发送录音后才创建 Agent 会话" : "前台自动准备按钮待命；不启动录音、不创建 Agent 会话")
                 let action = StartConversationAction(conversationUUID: uuid,
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)
@@ -157,13 +180,14 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     private var lastMediaButton = Date.distantPast
     func handleDedicatedButton() {
+        standbySuppressed = false
         guard callUUID != nil else {
             guard !opening else { log("正在建立会话，请稍候；忽略重复按键"); return }
             log("硬件按钮请求建立语音会话并录音")
             connect()
             return
         }
-        guard !opening, !wantsRecording else { log("正在启动采音，忽略重复按键"); return }
+        guard !opening, !wantsRecording, !preparingStandby else { log("系统会话正在准备，请稍候再按"); return }
         handleMediaButton("BLE-GATT")
     }
     private func handleMediaButton(_ name: String) {
@@ -218,6 +242,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 try await manager.perform([PauseConversationAction(conversationUUID: uuid, isPaused: value)])
             } catch {
                 guard attempt == self.generation else { return }
+                if self.preparingStandby {
+                    self.abortConnection("待命暂停失败：\(error.localizedDescription)")
+                    return
+                }
                 self.log("暂停/恢复请求失败：\(error.localizedDescription)")
                 self.finishBackgroundTask()
             }
@@ -225,9 +253,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func end() {
+        standbySuppressed = true
         generation = UUID()
         cancelScheduledResume()
-        guard let uuid = callUUID else { opening = false; return }
+        guard let uuid = callUUID else { cleanup(); return }
         Task { @MainActor in
             do { try await manager.perform([EndConversationAction(conversationUUID: uuid)]) }
             catch {
@@ -242,6 +271,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private func beginRecordingIfNeeded() {
         guard wantsRecording, audioActive, callUUID != nil else { return }
         wantsRecording = false
+        preparingStandby = false
         WearableService.shared.startRecording()
         guard WearableService.shared.isRecording else {
             log("系统已激活，但录音启动失败")
@@ -315,6 +345,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         audioActive = false
         paused = false
         wantsRecording = false
+        preparingStandby = false
         cancelScheduledResume()
         confirmedTimer?.invalidate()
         confirmedTimer = nil
@@ -347,8 +378,8 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DispatchQueue.main.async {
             guard manager === self.manager else { action.fail(); return }
             switch action {
-            case is StartConversationAction:
-                action.fulfill()
+            case let start as StartConversationAction:
+                start.fulfill(dateStarted: Date())
                 if let conversation = manager.conversations.first(where: { $0.uuid == self.callUUID }) {
                     manager.reportConversationEvent(.conversationConnected(Date()), for: conversation)
                 }
@@ -361,7 +392,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                     self.player = nil
                 }
                 action.fulfill()
+                if pause.isPaused && self.preparingStandby {
+                    self.log("待命暂停请求已确认，等待系统释放音频")
+                }
             case is EndConversationAction:
+                self.standbySuppressed = true
                 self.cleanup()
                 action.fulfill()
                 self.log("语音会话已结束")
@@ -383,6 +418,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             self.paused = false
             WearableService.shared.communicationAudioDidActivate()
             self.log("系统已启用音频会话")
+            if self.preparingStandby {
+                self.log("待命准备：立即暂停系统音频，不启动录音")
+                self.setPaused(true)
+                return
+            }
             self.beginRecordingIfNeeded()
             self.playPendingReply()
             self.finishBackgroundTask()
@@ -396,6 +436,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
             self.log("系统已停用音频会话；待验证其他 App 能否正常用麦")
+            if self.preparingStandby && self.paused {
+                self.preparingStandby = false
+                self.log("按钮待命已准备：系统音频已停用、未录音；可锁屏按键开始")
+                self.finishBackgroundTask()
+            }
         }
     }
 

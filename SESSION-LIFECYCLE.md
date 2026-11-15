@@ -34,6 +34,14 @@ https://developer.apple.com/forums/thread/806013
 
 保留 1.0.17 空会话修复：系统录音启动前不再 POST /api/conversations；首次有效录音发送时由既有 /api/shortcuts/voice 创建服务端会话并返回 ID，后续复用。失败启动与取消不产生预创建空会话。旧上传回调按通信代次隔离。既有空条目未自动删除。
 
+## 1.0.19 (20)：自动准备暂停会话
+
+1.0.18 实机仍然后台 StartConversationAction 错误 6；legacy 生命周期及签名后 audio/voip/bluetooth-central 均已核对，不能再将窗口或缺少后台模式称为根因。后台从零启动 LCK 目前仍未解决。
+
+采用此前已通过的暂停/后台恢复路径：前台、专用 BLE 通知已订阅、麦克风授权和登录缓存齐备时，自动建立 LCK 系统会话。wantsRecording=false，系统启用音频后立即请求暂停；收到 didDeactivate 才标记“按钮待命已准备”，不创建录音文件、不预创建服务端会话。后台按键复用该暂停会话恢复采音。准备期间不将重复按键作为录音或发送请求；有限超时清理。App 内或系统结束会话停止自动待命，避免用户刚结束又被自动重建。新进程不恢复这一抑制标记。
+
+这是前台自动准备、后台按需恢复，可能保留系统通话标识；不是后台冷建会话或 iOS 18 强退唤醒已修复。需实测自动暂停就绪、锁屏首键、两轮停止发送、DJI 输入、暂停后微信麦克风。若前台准备时暂时触发系统音频切换，应记录影响，不宣称完全无感。
+
 ## 1.0.13 (14)：修正系统授权入口
 
 用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。
