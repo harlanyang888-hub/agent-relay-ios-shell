@@ -87,7 +87,8 @@ async def action(path):
         provider.stop_advertising()
         state['last'] = '已暂停广播；此操作不保证断开现有连接'
     elif path == '/advertising/on':
-        provider.start_advertising(options)
+        if int(provider.advertisement_status) != 2:
+            provider.start_advertising(options)
         state['last'] = '已恢复广播，等待系统恢复连接'
     elif path == '/stop-server':
         stop_event.set()
@@ -139,6 +140,10 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if not secrets.compare_digest(str(body.get('token', '')), TOKEN):
                 self.respond({'error': 'forbidden'}, 403)
+                return
+            if self.path == '/stop-server':
+                self.respond({'message': '正在停止，已保存命令队列'})
+                loop.call_soon_threadsafe(stop_event.set)
                 return
             future = asyncio.run_coroutine_threadsafe(action(self.path), loop)
             self.respond(future.result(5))

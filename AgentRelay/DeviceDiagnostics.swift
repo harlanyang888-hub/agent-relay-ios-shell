@@ -235,7 +235,6 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         flushAcknowledgements()
     }
 
-    @available(iOS 17.0, *)
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
         guard BLERecoveryLab.enabled else { centralManager(central, didDisconnectPeripheral: peripheral, error: error); return }
