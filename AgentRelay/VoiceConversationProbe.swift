@@ -84,7 +84,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         Task { @MainActor in
             do {
                 // 保留成功基线的鉴权预检，使用只读接口，不提前创建空会话。
-                guard let url = URL(string: "\(service.gatewayBaseURL)/api/conversations") else {
+                guard let url = URL(string: "\(service.gatewayBaseURL)/api/bootstrap") else {
                     throw ProbeError.invalidEndpoint
                 }
                 var request = URLRequest(url: url)

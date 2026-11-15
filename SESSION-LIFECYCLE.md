@@ -48,7 +48,7 @@ https://developer.apple.com/forums/thread/806013
 
 此对照包移除 ASK 会话实现及全部 NSAccessorySetup* 声明，使用原 CoreBluetooth 发现、连接、订阅及恢复机制。ASK 实现保存在 Git 历史（bf3ae38），不把未证实的 ASK 冲突写成已确认系统缺陷。1.0.18 已排除 legacy 生命周期和缺少后台模式；本次隔离剩余授权路径回归，仍需实机结果。不是要求用户改为前台预建，也不宣称后台首键恢复已验收。iOS 26 的强退恢复工作必须独立验证，不能牺牲 iOS 18 已有后台功能。
 
-为保留成功基线的启动顺序与失效 Cookie 检查，原 POST /api/conversations 改为 GET 同一路径进行只读鉴权预检（成功后再请求 LCK），而非直接删去网络阶段。不会预建空会话。已对比已交付 1.0.11 与 1.0.18 的归档：均为 Xcode 16.4/16F6、iphoneos18.5 SDK、最低 iOS 15 及相同后台模式。
+为保留成功基线的启动顺序与失效 Cookie 检查，原 POST /api/conversations 改为 GET /api/bootstrap 进行只读鉴权预检（成功后再请求 LCK），而非直接删去网络阶段。已核对网关存在该 requireUi 保护的只读路由，不会预建空会话。已对比已交付 1.0.11 与 1.0.18 的归档：均为 Xcode 16.4/16F6、iphoneos18.5 SDK、最低 iOS 15 及相同后台模式。
 
 ## 1.0.13 (14)：修正系统授权入口
 
