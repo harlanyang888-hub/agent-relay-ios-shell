@@ -42,6 +42,12 @@ https://developer.apple.com/forums/thread/806013
 
 这是前台自动准备、后台按需恢复，可能保留系统通话标识；不是后台冷建会话或 iOS 18 强退唤醒已修复。需实测自动暂停就绪、锁屏首键、两轮停止发送、DJI 输入、暂停后微信麦克风。若前台准备时暂时触发系统音频切换，应记录影响，不宣称完全无感。
 
+## 1.0.20 (21)：撤回自动待命，隔离 ASK 回归
+
+用户明确拒绝前台预建/暂停待命方案。完整撤回 1.0.19 自动待命及其前台、Cookie 和 BLE 自动触发入口。恢复 1abf377（1.0.11，后台首键创建已由用户日志验证）的 DeviceDiagnostics、WebViewController、AppDelegate 和 VoiceConversationProbe 基线；后者只保留不预创建服务端空会话的变更与诊断日志。WearableService 保留首次真实上传创建并复用 Agent 会话的修复。
+
+此对照包移除 ASK 会话实现及全部 NSAccessorySetup* 声明，使用原 CoreBluetooth 发现、连接、订阅及恢复机制。ASK 实现保存在 Git 历史（bf3ae38），不把未证实的 ASK 冲突写成已确认系统缺陷。1.0.18 已排除 legacy 生命周期和缺少后台模式；本次隔离剩余授权路径回归，仍需实机结果。不是要求用户改为前台预建，也不宣称后台首键恢复已验收。iOS 26 的强退恢复工作必须独立验证，不能牺牲 iOS 18 已有后台功能。
+
 ## 1.0.13 (14)：修正系统授权入口
 
 用户在 iOS 18.6.1 的 1.0.12 上遇到 ASErrorDomain 550（pickerRestricted），未能添加设备。修正为 ASK 先恢复系统授权，首次授权前不创建 CBCentralManager；显示选择器前释放旧管理器，授权后再建连接。引入单窗口 UIScene 生命周期，保留 URL 打开/快捷录音的前台延迟处理；选择器只在 active app + foregroundActive scene 时显示，失败记录系统 error userInfo。加上 service UUID + name 的发现过滤及对应 plist 声明（电脑 RN12108，未来设备 AgentRelay 前缀）。

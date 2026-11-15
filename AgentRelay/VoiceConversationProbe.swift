@@ -8,7 +8,6 @@ import LiveCommunicationKit
 final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAudioPlayerDelegate {
     static let shared = VoiceConversationProbe()
     private var manager: ConversationManager!
-    private var managerReady = false
     private(set) var callUUID: UUID?
     private(set) var audioActive = false
     private(set) var paused = false
@@ -23,9 +22,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var confirmedTimer: Timer?
     private var generation = UUID()
     private var connectionDeadline: DispatchWorkItem?
-    private var preparingStandby = false
-    private var standbyAttempted = false
-    private var standbySuppressed = false
 
     private override init() {
         super.init()
@@ -33,7 +29,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func configureManager() {
-        managerReady = false
         let config = ConversationManager.Configuration(
             ringtoneName: nil, iconTemplateImageData: nil,
             maximumConversationGroups: 1, maximumConversationsPerConversationGroup: 1,
@@ -48,22 +43,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DeviceDiagnostics.shared.log("LCK \(text) state=\(UIApplication.shared.applicationState.rawValue)")
     }
 
-    func applicationBecameActive() {
-        standbyAttempted = false
-        prepareButtonStandbyIfNeeded()
-    }
-
-    func prepareButtonStandbyIfNeeded() {
-        guard UIApplication.shared.applicationState == .active,
-              BLEProbe.shared.canRunButtonTrial,
-              !standbySuppressed, !standbyAttempted, !opening, callUUID == nil,
-              AVAudioSession.sharedInstance().recordPermission == .granted,
-              let cookie = WearableService.shared.authCookie, !cookie.isEmpty else { return }
-        standbyAttempted = true
-        connect(recordImmediately: false)
-    }
-
-    func connect(recordImmediately: Bool = true) {
+    func connect() {
         guard !opening, callUUID == nil else { return }
         let service = WearableService.shared
         guard !service.isRecording else { log("请先结束当前录音"); return }
@@ -87,7 +67,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
         service.stopListening()
         opening = true
-        preparingStandby = !recordImmediately
         generation = UUID()
         let attempt = generation
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Hardware voice connection") { [weak self] in
@@ -96,7 +75,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
         let deadline = DispatchWorkItem { [weak self] in
             guard let self = self, self.generation == attempt,
-                  self.opening || self.preparingStandby || (self.wantsRecording && !self.audioActive) else { return }
+                  self.opening || (self.wantsRecording && !self.audioActive) else { return }
             self.abortConnection("系统未能及时建立会话，请重新按键")
         }
         connectionDeadline = deadline
@@ -105,7 +84,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         Task { @MainActor in
             do {
                 guard attempt == self.generation else { return }
-                // 首次有效录音发送时由语音上传接口创建服务端会话，启动失败不留空条目。
+                // 不预创建服务端空会话：有效录音上传时再创建。
                 // 先配置类别，不自行激活。等待系统 didActivate 后才采音。
                 try audio.setCategory(.playAndRecord, mode: .voiceChat,
                     options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
@@ -118,16 +97,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 }
                 let uuid = UUID()
                 self.callUUID = uuid
-                self.wantsRecording = recordImmediately
-                if !recordImmediately, UIApplication.shared.applicationState != .active {
-                    self.abortConnection("待命准备未完成，请打开 App 等待按钮待命就绪")
-                    return
-                }
-                self.log(recordImmediately ? "请求系统语音会话；实际发送录音后才创建 Agent 会话" : "前台自动准备按钮待命；不启动录音、不创建 Agent 会话")
+                self.wantsRecording = true
+                self.log("按键请求系统采音；录音发送后才创建 Agent 会话")
                 let action = StartConversationAction(conversationUUID: uuid,
                     handles: [Handle(type: .generic, value: "agent-relay", displayName: "Agent Relay")],
                     isVideo: false)
-                try await self.startSystemConversation(action, attempt: attempt)
+                DeviceDiagnostics.shared.log("LCK pre-ASK 对照启动 state=\(UIApplication.shared.applicationState.rawValue) modes=\(Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") ?? [])")
+                try await self.manager.perform([action])
                 guard attempt == self.generation else { return }
                 self.opening = false
             } catch {
@@ -144,29 +120,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         log(message)
     }
 
-    @MainActor
-    private func waitForManager(attempt: UUID) async throws {
-        for _ in 0..<60 {
-            guard attempt == generation else { throw CancellationError() }
-            if managerReady { return }
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        throw ProbeError.managerNotReady
-    }
-
-    @MainActor
-    private func startSystemConversation(_ action: StartConversationAction, attempt: UUID) async throws {
-        try await waitForManager(attempt: attempt)
-        DeviceDiagnostics.shared.log("LCK 启动诊断 backgroundModes=\(Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") ?? []) state=\(UIApplication.shared.applicationState.rawValue) lifecycle=legacy")
-        do {
-            try await manager.perform([action])
-        } catch {
-            let ns = error as NSError
-            DeviceDiagnostics.shared.log("LCK 启动请求失败 domain=\(ns.domain) code=\(ns.code) detail=\(ns.userInfo)")
-            throw error
-        }
-    }
-
     func pauseAndSend() {
         guard callUUID != nil else { return }
         wantsRecording = false
@@ -180,14 +133,13 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     private var lastMediaButton = Date.distantPast
     func handleDedicatedButton() {
-        standbySuppressed = false
         guard callUUID != nil else {
             guard !opening else { log("正在建立会话，请稍候；忽略重复按键"); return }
             log("硬件按钮请求建立语音会话并录音")
             connect()
             return
         }
-        guard !opening, !wantsRecording, !preparingStandby else { log("系统会话正在准备，请稍候再按"); return }
+        guard !opening, !wantsRecording else { log("正在启动采音，忽略重复按键"); return }
         handleMediaButton("BLE-GATT")
     }
     private func handleMediaButton(_ name: String) {
@@ -242,10 +194,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 try await manager.perform([PauseConversationAction(conversationUUID: uuid, isPaused: value)])
             } catch {
                 guard attempt == self.generation else { return }
-                if self.preparingStandby {
-                    self.abortConnection("待命暂停失败：\(error.localizedDescription)")
-                    return
-                }
                 self.log("暂停/恢复请求失败：\(error.localizedDescription)")
                 self.finishBackgroundTask()
             }
@@ -253,10 +201,9 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func end() {
-        standbySuppressed = true
         generation = UUID()
         cancelScheduledResume()
-        guard let uuid = callUUID else { cleanup(); return }
+        guard let uuid = callUUID else { opening = false; return }
         Task { @MainActor in
             do { try await manager.perform([EndConversationAction(conversationUUID: uuid)]) }
             catch {
@@ -271,7 +218,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private func beginRecordingIfNeeded() {
         guard wantsRecording, audioActive, callUUID != nil else { return }
         wantsRecording = false
-        preparingStandby = false
         WearableService.shared.startRecording()
         guard WearableService.shared.isRecording else {
             log("系统已激活，但录音启动失败")
@@ -345,7 +291,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         audioActive = false
         paused = false
         wantsRecording = false
-        preparingStandby = false
         cancelScheduledResume()
         confirmedTimer?.invalidate()
         confirmedTimer = nil
@@ -356,11 +301,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func conversationManagerDidBegin(_ manager: ConversationManager) {
-        DispatchQueue.main.async {
-            guard manager === self.manager else { return }
-            self.managerReady = true
-            DeviceDiagnostics.shared.log("LCK manager began")
-        }
+        DeviceDiagnostics.shared.log("LCK manager began")
     }
 
     func conversationManagerDidReset(_ manager: ConversationManager) {
@@ -378,8 +319,8 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DispatchQueue.main.async {
             guard manager === self.manager else { action.fail(); return }
             switch action {
-            case let start as StartConversationAction:
-                start.fulfill(dateStarted: Date())
+            case is StartConversationAction:
+                action.fulfill()
                 if let conversation = manager.conversations.first(where: { $0.uuid == self.callUUID }) {
                     manager.reportConversationEvent(.conversationConnected(Date()), for: conversation)
                 }
@@ -392,11 +333,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                     self.player = nil
                 }
                 action.fulfill()
-                if pause.isPaused && self.preparingStandby {
-                    self.log("待命暂停请求已确认，等待系统释放音频")
-                }
             case is EndConversationAction:
-                self.standbySuppressed = true
                 self.cleanup()
                 action.fulfill()
                 self.log("语音会话已结束")
@@ -418,11 +355,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             self.paused = false
             WearableService.shared.communicationAudioDidActivate()
             self.log("系统已启用音频会话")
-            if self.preparingStandby {
-                self.log("待命准备：立即暂停系统音频，不启动录音")
-                self.setPaused(true)
-                return
-            }
             self.beginRecordingIfNeeded()
             self.playPendingReply()
             self.finishBackgroundTask()
@@ -436,11 +368,6 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
             self.log("系统已停用音频会话；待验证其他 App 能否正常用麦")
-            if self.preparingStandby && self.paused {
-                self.preparingStandby = false
-                self.log("按钮待命已准备：系统音频已停用、未录音；可锁屏按键开始")
-                self.finishBackgroundTask()
-            }
         }
     }
 
@@ -450,13 +377,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private enum ProbeError: LocalizedError {
-        case invalidEndpoint, gateway(Int), playback, managerNotReady
+        case invalidEndpoint, gateway(Int), playback
         var errorDescription: String? {
             switch self {
             case .invalidEndpoint: return "服务器地址无效"
             case .gateway(let code): return "Agent Relay HTTP \(code)，请检查登录和连接"
             case .playback: return "无法启动回复音频"
-            case .managerNotReady: return "系统语音管理器未就绪，请重新按键"
             }
         }
     }

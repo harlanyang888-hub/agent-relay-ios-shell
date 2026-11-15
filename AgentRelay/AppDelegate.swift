@@ -11,10 +11,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var pendingRecordingContext: [String: String] = [:]
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        _ = BLEProbe.shared
-        DeviceDiagnostics.shared.log("App lifecycle=legacy backgroundModes=\(Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") ?? [])")
+        if launchOptions?[.bluetoothCentrals] != nil || UserDefaults.standard.string(forKey: "relay_dedicated_button_id") != nil {
+            _ = BLEProbe.shared
+        }
         DeviceDiagnostics.shared.log("App 启动 state=\(application.applicationState.rawValue)")
         DeviceDiagnostics.shared.log("App launch keys=\(launchOptions?.keys.map { $0.rawValue } ?? [])")
+        DeviceDiagnostics.shared.log("App comparison=pre-ASK；不自动预建系统会话")
         window = UIWindow(frame: UIScreen.main.bounds)
 
         // 空闲不占用音频；专用 BLE 按键按需建立系统语音会话。
@@ -38,7 +40,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {
         DeviceDiagnostics.shared.log("App became active category=\(AVAudioSession.sharedInstance().category.rawValue)")
         performPendingRecordingAction()
-        if #available(iOS 17.4, *) { VoiceConversationProbe.shared.applicationBecameActive() }
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
