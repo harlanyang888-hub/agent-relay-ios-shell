@@ -83,6 +83,20 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         log("正在连接自己的 Agent Relay 语音会话")
         Task { @MainActor in
             do {
+                // 保留成功基线的鉴权预检，使用只读接口，不提前创建空会话。
+                guard let url = URL(string: "\(service.gatewayBaseURL)/api/conversations") else {
+                    throw ProbeError.invalidEndpoint
+                }
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.timeoutInterval = 15
+                request.setValue(service.gatewayBaseURL, forHTTPHeaderField: "Origin")
+                request.setValue(cookie, forHTTPHeaderField: "Cookie")
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard attempt == self.generation else { return }
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    throw ProbeError.gateway((response as? HTTPURLResponse)?.statusCode ?? -1)
+                }
                 guard attempt == self.generation else { return }
                 // 不预创建服务端空会话：有效录音上传时再创建。
                 // 先配置类别，不自行激活。等待系统 didActivate 后才采音。
