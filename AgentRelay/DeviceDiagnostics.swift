@@ -43,6 +43,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var lastRefreshAt: TimeInterval = 0
     private var selected: CBPeripheral?
     private var notificationsReady = false
+    private var connectionRetry: DispatchWorkItem?
+    private var connectionFailures = 0
     private var lastValueLog: [String: (String, TimeInterval)] = [:]
     private var volumeObservation: NSKeyValueObservation?
     private var scanningRequested = false
@@ -280,6 +282,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         notificationsReady = false
         lastValueLog.removeAll()
         if let previous = selected, previous.identifier != peripheral.identifier {
+            connectionRetry?.cancel()
+            connectionFailures = 0
             central.cancelPeripheralConnection(previous)
         }
         selected = peripheral
@@ -289,6 +293,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func disconnect() {
+        connectionRetry?.cancel()
+        connectionFailures = 0
         testReconnect?.cancel()
         testDisconnectUntil = nil
         finishDisconnectTest()
@@ -343,12 +349,33 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard !BLERecoveryLab.enabled || peripheral.identifier == selected?.identifier else { return }
+        connectionRetry?.cancel()
+        connectionFailures = 0
         DeviceDiagnostics.shared.log("BLE 已连接 \(peripheral.name ?? "未命名")")
         peripheral.discoverServices(nil)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         DeviceDiagnostics.shared.log("BLE 连接失败 \(String(describing: error))")
+        guard BLERecoveryLab.enabled, peripheral.identifier == selected?.identifier,
+              central.state == .poweredOn, testDisconnectUntil == nil else { return }
+        connectionRetry?.cancel()
+        connectionFailures += 1
+        guard connectionFailures <= 3 else {
+            DeviceDiagnostics.shared.log("LAB 自动重试已达3次；保留当前绑定，等待恢复事件")
+            return
+        }
+        let delay = Double(connectionFailures * 2)
+        DeviceDiagnostics.shared.log("LAB 连接重试 id=\(peripheral.identifier) attempt=\(connectionFailures) delay=\(delay)")
+        let retry = DispatchWorkItem { [weak self] in
+            guard let self = self, self.selected?.identifier == peripheral.identifier,
+                  self.central?.state == .poweredOn, peripheral.state == .disconnected,
+                  self.testDisconnectUntil == nil else { return }
+            self.central.connect(peripheral, options: self.connectionOptions)
+        }
+        connectionRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: retry)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {

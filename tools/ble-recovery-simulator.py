@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import os
 import queue as thread_queue
 from pathlib import Path
 import secrets
@@ -24,13 +25,16 @@ EVENT = UUID('a8d70201-6b44-4e93-a2d5-73f2a34b8180')
 ACK = UUID('a8d70202-6b44-4e93-a2d5-73f2a34b8180')
 IDENTITY = UUID('a8d70203-6b44-4e93-a2d5-73f2a34b8180')
 TOKEN = secrets.token_hex(24)
+RUN_ID = secrets.token_hex(8)
 parser = argparse.ArgumentParser()
 parser.add_argument('--port', type=int, default=8767)
 parser.add_argument('--state-file', type=Path, default=Path(__file__).resolve().parents[2] / 'agent-relay-ios-shell-builds' / 'ble-recovery-state.json')
 args = parser.parse_args()
 queue = CommandQueue(args.state_file)
 loop = characteristic = provider = stop_event = options = None
-state = {'advertising': 'starting', 'subscribers': 0, 'last': '等待手机订阅', 'last_notify': None}
+state = {'advertising': 'starting', 'subscribers': 0, 'last': '等待手机订阅', 'last_notify': None,
+         'run_id': RUN_ID, 'pid': os.getpid(), 'started_at': time.time(), 'recovery_count': 0}
+log_path = args.state_file.with_suffix('.events.jsonl')
 last_notify_at = 0
 last_press = 0
 release_queue = thread_queue.Queue()
@@ -51,6 +55,15 @@ threading.Thread(target=release_winrt_objects, daemon=True, name='WinRT-release'
 
 def log(message):
     print(time.strftime('%H:%M:%S'), message, flush=True)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists() and log_path.stat().st_size > 4 * 1024 * 1024:
+            log_path.replace(log_path.with_suffix('.previous.jsonl'))
+        with log_path.open('a', encoding='utf-8') as output:
+            output.write(json.dumps({'time': time.time(), 'run': RUN_ID, 'pid': os.getpid(),
+                                     'message': message}, ensure_ascii=False) + '\n')
+    except OSError as error:
+        print('Diagnostic log unavailable:', error, flush=True)
 
 
 def buffer(data):
@@ -276,8 +289,24 @@ async def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     provider.start_advertising(options)
     log(f'控制页 http://127.0.0.1:{args.port}/ ; device={queue.data["device_id"]} ; 状态={args.state_file}')
+    last_tick = time.time()
     try:
         while not stop_event.is_set():
+            now = time.time()
+            gap = now - last_tick
+            last_tick = now
+            if gap > 20:
+                log(f'Execution gap {gap:.1f}s; checking advertising after possible system resume')
+                state['last_execution_gap'] = {'at': now, 'seconds': gap}
+                # Do not drop a working subscription or rebuild device identity.
+                # A gap alone is not proof of sleep (clock changes can cause it).
+                if not state['subscribers'] and int(provider.advertisement_status) not in (2, 4):
+                    try:
+                        provider.start_advertising(options)
+                        state['recovery_count'] += 1
+                        log('Requested advertising recovery; awaiting actual status and phone subscription')
+                    except Exception as error:
+                        log('Advertising recovery failed: ' + str(error))
             if time.monotonic() - last_notify_at >= 2:
                 await notify()
             try:
