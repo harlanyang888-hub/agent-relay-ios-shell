@@ -9,8 +9,8 @@ root = Path(__file__).resolve().parents[1]
 for name in ['AgentRelay/Info.plist', 'ShareExtension/Info.plist']:
     path = root / name
     data = plistlib.loads(path.read_bytes())
-    data['CFBundleShortVersionString'] = '1.0.26' if args.profile == 'legacy' else '1.0.27'
-    data['CFBundleVersion'] = '27' if args.profile == 'legacy' else '28'
+    data['CFBundleShortVersionString'] = '1.0.28' if args.profile == 'legacy' else '1.0.29'
+    data['CFBundleVersion'] = '29' if args.profile == 'legacy' else '30'
     if name.startswith('AgentRelay/'):
         data['RelayBLERecoveryLab'] = True
         data['RelayUseAccessorySetupKit'] = args.profile == 'ask'

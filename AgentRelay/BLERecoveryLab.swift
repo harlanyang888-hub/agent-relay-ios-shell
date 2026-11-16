@@ -41,8 +41,19 @@ final class RecoveryAccessoryBinding {
             case .activated:
                 self.ready = true
                 self.restore()
-            case .accessoryAdded, .accessoryChanged:
+            case .accessoryAdded:
                 if !self.migrating, let id = event.accessory?.bluetoothIdentifier { self.onAuthorized?(id) }
+            case .accessoryChanged:
+                // Changes also arrive for historical authorizations. They must
+                // never replace the device the user most recently selected.
+                if !self.migrating, let id = event.accessory?.bluetoothIdentifier {
+                    let saved = UserDefaults.standard.string(forKey: BLERecoveryLab.bindingKey)
+                    guard id.uuidString == saved else {
+                        DeviceDiagnostics.shared.log("LAB ASK 忽略非当前按钮的变化 id=\(id)")
+                        return
+                    }
+                    self.onAuthorized?(id)
+                }
             case .migrationComplete:
                 self.migrating = false
                 self.restore()
