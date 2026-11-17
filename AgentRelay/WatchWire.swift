@@ -46,11 +46,10 @@ struct WatchReply {
 final class WatchReceipts {
     private struct Entry: Codable { let key: String; let packet: Data; let succeeded: Bool; let error: UInt8 }
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
-    private var entries: [Entry] {
-        guard let data = defaults.data(forKey: "watch_v3_receipts"),
-              let result = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
-        return result
+    private var entries: [Entry]
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        entries = defaults.data(forKey: "watch_v3_receipts").flatMap { try? JSONDecoder().decode([Entry].self, from: $0) } ?? []
     }
     func result(for request: WatchRequest) -> (Bool, UInt8)? {
         guard let old = entries.last(where: { $0.key == request.key }) else { return nil }
@@ -59,7 +58,8 @@ final class WatchReceipts {
     func record(_ request: WatchRequest, succeeded: Bool, error: UInt8) {
         var all = entries.filter { $0.key != request.key }
         all.append(Entry(key: request.key, packet: request.packet, succeeded: succeeded, error: error))
-        if let data = try? JSONEncoder().encode(Array(all.suffix(64))) { defaults.set(data, forKey: "watch_v3_receipts") }
+        entries = Array(all.suffix(64))
+        if let data = try? JSONEncoder().encode(entries) { defaults.set(data, forKey: "watch_v3_receipts") }
     }
 }
 

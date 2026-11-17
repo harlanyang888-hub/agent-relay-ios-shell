@@ -5,13 +5,17 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
         profile: [legacy, ask]
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then sudo xcode-select -s /Applications/Xcode_16.4.app; fi
+          xcodebuild -version
       - name: Check command queue and phone receipts
         run: |
           python3 -m unittest discover -s tools -p test_ble_command_queue.py -v

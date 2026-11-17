@@ -60,6 +60,25 @@ final class WatchVoiceSession {
         let fm = FileManager.default
         directory = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WatchVoice")
         recordings = fm.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Recordings")
+        recoverStorage()
+        if journal.draft != nil { attachRecorder() }
+        monitor.pathUpdateHandler = { [weak self] path in
+            if path.status == .satisfied { DispatchQueue.main.async { self?.flushDeliveries() } }
+        }
+        monitor.start(queue: DispatchQueue(label: "relay.watch.network"))
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.flushDeliveries() }
+        NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, !self.storageReady, !self.starting, !self.finalizing,
+                  !WearableService.shared.isRecording else { return }
+            self.recoverStorage()
+            if self.storageReady, self.journal.draft != nil { self.attachRecorder() }
+            self.flushDeliveries()
+        }
+    }
+
+    private func recoverStorage() {
+        let fm = FileManager.default
+        storageReady = true
         do {
             for path in [directory, recordings] {
                 try fm.createDirectory(at: path, withIntermediateDirectories: true,
@@ -81,12 +100,6 @@ final class WatchVoiceSession {
             if journal.draft?.segments.isEmpty == true { journal.draft = nil }
             try save()
         } catch { storageReady = false; lastError = "草稿存储不可用：\(error.localizedDescription)" }
-        if journal.draft != nil { attachRecorder() }
-        monitor.pathUpdateHandler = { [weak self] path in
-            if path.status == .satisfied { DispatchQueue.main.async { self?.flushDeliveries() } }
-        }
-        monitor.start(queue: DispatchQueue(label: "relay.watch.network"))
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.flushDeliveries() }
     }
 
     private func save() throws {
@@ -132,12 +145,13 @@ final class WatchVoiceSession {
             reply(request, result.0 ? .applied : .rejected, error: result.1); return
         }
         if let old = pending {
+            if old.packet != request.packet { receipts.record(request, succeeded: false, error: 4) }
             reply(request, old.packet == request.packet ? .received : .rejected, error: old.packet == request.packet ? 0 : 4)
             return
         }
         updateRevision()
         guard storageReady, !request.expired(), request.epoch == epoch, request.revision == revision,
-              !starting, !finalizing else { reply(request, .rejected, error: storageReady ? 3 : 8); return }
+              !starting, !finalizing else { finish(request, succeeded: false, error: storageReady ? 3 : 8); return }
         pending = request
         reply(request, .received)
         switch request.action {
