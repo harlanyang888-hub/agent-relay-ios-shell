@@ -14,6 +14,8 @@ LCK 管理系统语音会话，并在系统激活音频后启动采集；AVAudio
 
 不设置“严禁 allowBluetooth”的全局规则，这会改变外接蓝牙麦克风的可用性。蓝牙麦克风音质按实际协商结果验证，不承诺所有 HFP 都是 8kHz，也不把 AAC 文件编码采样率当成采集链路带宽。暂停或发送后的微信音频兼容性另行实测。
 
+Apple 说明 voiceChat 模式本身会自动应用 allowBluetoothHFP。因此保留 voiceChat 时，不能把删除显式 allowBluetooth 当作禁止 HFP 的实现。参考：https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/voicechat
+
 ## 操作
 
 | 操作 | 手机实际状态 | 结果 |

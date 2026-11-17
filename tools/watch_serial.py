@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--port', default='COM4')
 parser.add_argument('--seconds', type=float, default=20)
 parser.add_argument('--log', type=Path)
+parser.add_argument('--reset', action='store_true', help='Reset the connected watch to capture boot diagnostics')
 args = parser.parse_args()
 connection = serial.Serial()
 connection.port = args.port
@@ -19,6 +20,9 @@ connection.timeout = 0.25
 connection.dtr = False
 connection.rts = False
 connection.open()
+if args.reset:
+    from esptool.reset import HardReset
+    HardReset(connection, uses_usb=True)()
 output = args.log.open('a', encoding='utf-8') if args.log else None
 try:
     deadline = time.monotonic() + args.seconds
