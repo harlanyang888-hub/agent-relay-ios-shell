@@ -27,4 +27,6 @@ try:
 finally:
     watcher.stop()
     watcher.remove_received(token)
-print(json.dumps(dict(observations=len(seen),last=seen[-1] if seen else None)))
+print(json.dumps(dict(observations=len(seen),last=seen[-1] if seen else None,
+    names=sorted({x['name'] for x in seen if x['name']}),
+    services=sorted({service for x in seen for service in x['services']}))))

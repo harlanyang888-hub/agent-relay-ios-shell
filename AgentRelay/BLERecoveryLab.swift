@@ -76,16 +76,16 @@ final class RecoveryAccessoryBinding {
         }
         let descriptor = ASDiscoveryDescriptor()
         descriptor.bluetoothServiceUUID = CBUUID(string: BLERecoveryLab.service)
+        descriptor.bluetoothNameSubstring = "AgentRelay-Watch"
         let symbol = UIImage(systemName: "dot.radiowaves.left.and.right")!.withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
         let image = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { _ in symbol.draw(in: CGRect(x: 16, y: 16, width: 128, height: 128)) }
-        var items = [ASPickerDisplayItem(name: "Agent Relay 恢复测试按钮", productImage: image, descriptor: descriptor)]
-        if session.accessories.isEmpty,
-           let saved = UserDefaults.standard.string(forKey: BLERecoveryLab.bindingKey), let id = UUID(uuidString: saved) {
-            let item = ASMigrationDisplayItem(name: "已连接的恢复测试按钮", productImage: image, descriptor: descriptor)
-            item.peripheralIdentifier = id
-            items = [item]
-            migrating = true
-        }
+        let computer = ASDiscoveryDescriptor()
+        computer.bluetoothServiceUUID = CBUUID(string: BLERecoveryLab.service)
+        computer.bluetoothNameSubstring = "RN12108"
+        let items = [ASPickerDisplayItem(name: "Relay 语音手表", productImage: image, descriptor: descriptor),
+                     ASPickerDisplayItem(name: "电脑模拟按钮", productImage: image, descriptor: computer)]
+        // Adding a new device must discover nearby hardware, never migrate the saved PC identifier.
+        DeviceDiagnostics.shared.log("LAB ASK 查找新设备：Relay 语音手表 / 电脑模拟按钮；已授权=\(session.accessories.count)")
         presenting = true
         onBeforePicker?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

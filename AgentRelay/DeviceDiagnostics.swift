@@ -72,6 +72,23 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         return binding.session.accessories.compactMap { $0.bluetoothIdentifier }
     }
 
+    func authorizedButtonName(_ id: UUID) -> String {
+        if let peripheral = selected, peripheral.identifier == id,
+           peripheral.name?.contains("AgentRelay-Watch") == true { return "Relay 语音手表" }
+        guard #available(iOS 18.0, *), let binding = accessoryBinding as? RecoveryAccessoryBinding,
+              let accessory = binding.session.accessories.first(where: { $0.bluetoothIdentifier == id }) else { return "语音按钮" }
+        let name = accessory.displayName
+        if name.contains("RN12108") || name.contains("恢复测试") { return "电脑模拟按钮" }
+        return name.isEmpty ? "语音按钮" : name
+    }
+
+    func addNewAccessory() {
+        guard BLERecoveryLab.usesASK, #available(iOS 18.0, *),
+              let binding = accessoryBinding as? RecoveryAccessoryBinding else { scan(); return }
+        manuallyDisconnected = false
+        binding.add()
+    }
+
     func reconnectAuthorizedButton(_ id: UUID) {
         guard authorizedButtonIDs.contains(id) else { return }
         manuallyDisconnected = false
@@ -531,7 +548,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
         let scan = UIButton(type: .system)
-        scan.setTitle("添加按钮", for: .normal)
+        scan.setTitle("连接手表 / 按钮", for: .normal)
         scan.addTarget(self, action: #selector(scanBLE), for: .touchUpInside)
         let disconnect = UIButton(type: .system)
         disconnect.setTitle("断开按钮", for: .normal)
@@ -623,14 +640,14 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
 
     @objc private func scanBLE() {
         let ids = BLEProbe.shared.authorizedButtonIDs
-        guard !ids.isEmpty else { BLEProbe.shared.scan(); return }
-        let choices = UIAlertController(title: "连接按钮", message: "已授权设备无需重复添加。请选择设备编号；添加新的设备请使用下方入口。", preferredStyle: .actionSheet)
+        guard !ids.isEmpty else { BLEProbe.shared.addNewAccessory(); return }
+        let choices = UIAlertController(title: "连接语音设备", message: "第一次连接 ESP32 手表，请选择“配对新手表 / 按钮”。下方是以前授权过的设备。", preferredStyle: .actionSheet)
+        choices.addAction(UIAlertAction(title: "配对新手表 / 按钮", style: .default) { _ in BLEProbe.shared.addNewAccessory() })
         let saved = UserDefaults.standard.string(forKey: BLERecoveryLab.bindingKey)
-        for id in ids {
-            let title = "\(id.uuidString.prefix(8))\(id.uuidString == saved ? "（当前）" : "")"
+        for (index, id) in ids.enumerated() {
+            let title = "\(BLEProbe.shared.authorizedButtonName(id)) · \(index + 1)\(id.uuidString == saved ? "（当前）" : "")"
             choices.addAction(UIAlertAction(title: title, style: .default) { _ in BLEProbe.shared.reconnectAuthorizedButton(id) })
         }
-        choices.addAction(UIAlertAction(title: "添加新按钮", style: .default) { _ in BLEProbe.shared.scan() })
         choices.addAction(UIAlertAction(title: "取消", style: .cancel))
         choices.popoverPresentationController?.sourceView = view
         choices.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
