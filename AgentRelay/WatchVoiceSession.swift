@@ -180,7 +180,11 @@ final class WatchVoiceSession {
             finalize(ending: true) { [weak self] ok in
                 guard let self = self else { return }
                 if ok { VoiceConversationProbe.shared.end(); self.confirmEnded(request) }
-                else { self.finish(request, succeeded: false, error: 8) }
+                else {
+                    // Keep recoverable segments, but release the system call even if saving failed.
+                    VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                    self.confirmEnded(request, succeeded: false)
+                }
             }
         }
     }
