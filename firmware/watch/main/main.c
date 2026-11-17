@@ -1,3 +1,5 @@
+#include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -144,33 +146,44 @@ void app_main(void) {
     ble_store_config_init();nimble_port_freertos_init(host_task);
     watch_state state;watch_init(&state,esp_random());button boot={0},power={0};
     uint16_t handle=BLE_HS_CONN_HANDLE_NONE;bool secure=false,subscribed=false;
-    uint64_t retry_at=0,sync_at=0;
+    uint64_t retry_at=0,sync_at=0,gesture_deadline=0;
+    int deferred_gesture=-1;
     ESP_LOGI(TAG,"watch protocol v3; requires matching phone build; no local microphone capture");
     while(true) {
         uint64_t now=esp_timer_get_time()/1000;app_event event;
         while(xQueueReceive(events,&event,0)==pdTRUE) {
             if(event.kind==LINK_UP) {handle=event.handle;secure=false;subscribed=false;watch_disconnected(&state);}
-            else if(event.kind==LINK_DOWN && event.handle==handle) {handle=BLE_HS_CONN_HANDLE_NONE;secure=false;subscribed=false;watch_disconnected(&state);}
+            else if(event.kind==LINK_DOWN && event.handle==handle) {handle=BLE_HS_CONN_HANDLE_NONE;secure=false;subscribed=false;deferred_gesture=-1;sync_at=0;watch_disconnected(&state);}
             else if(event.handle==handle) {
-                if(event.kind==SECURED) {secure=event.enabled;if(!secure) watch_disconnected(&state);}
-                if(event.kind==SUBSCRIBED) {subscribed=event.enabled;if(!subscribed) watch_disconnected(&state);}
+                if(event.kind==SECURED) {secure=event.enabled;if(!secure) watch_disconnected(&state);else sync_at=0;}
+                if(event.kind==SUBSCRIBED) {subscribed=event.enabled;if(!subscribed) watch_disconnected(&state);else sync_at=0;}
                 if(event.kind==PHONE_STATE && secure && subscribed) {
                     int result=watch_accept(&state,event.data,20,now);
                     if(result==1) pulse(state.capture==WATCH_PAUSED ? 2 : 1,state.capture==WATCH_IDLE ? 200 : 60);
                     if(result==2) pulse(3,40);
-                    sync_at=now+10000;
+                    if(state.ready && !state.pending) sync_at=UINT64_MAX;
                 }
             }
         }
-        if(watch_timeout(&state,now)) {ESP_LOGW(TAG,"phone confirmation timed out");pulse(3,40);sync_at=now+2000;}
+        if(watch_timeout(&state,now)) {ESP_LOGW(TAG,"phone confirmation timed out");pulse(3,40);deferred_gesture=-1;sync_at=UINT64_MAX;}
+        if(deferred_gesture>=0 && now>=gesture_deadline) {deferred_gesture=-1;pulse(3,40);}
+        if(deferred_gesture>=0 && state.ready && !state.pending) {
+            enum watch_action action=(enum watch_action)deferred_gesture;deferred_gesture=-1;
+            if(watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
+            else pulse(3,40);
+        }
         int b=gesture(&boot,!gpio_get_level(GPIO_NUM_0),now),p=gesture(&power,gpio_get_level(GPIO_NUM_10),now);
         if(b || p==2) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
-            if(secure && subscribed && watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
-            else {pulse(3,40);sync_at=0;}
+            if(!secure || !subscribed || deferred_gesture>=0) pulse(3,40);
+            else if(watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
+            else if(!state.ready && (!state.pending || state.packet[3]==WATCH_SYNC)) {
+                // One live gesture may wait for its state handshake, never a historical FIFO.
+                deferred_gesture=action;gesture_deadline=now+5000;sync_at=0;
+            } else pulse(3,40);
         }
         if(secure && subscribed && !state.pending && now>=sync_at) {
-            if(watch_request(&state,WATCH_SYNC,now)) {transmit(&state,handle);retry_at=now+1000;sync_at=now+10000;}
+            if(watch_request(&state,WATCH_SYNC,now)) {transmit(&state,handle);retry_at=now+1000;sync_at=UINT64_MAX;}
         }
         if(secure && subscribed && state.pending && now>=retry_at) {transmit(&state,handle);retry_at=now+1000;}
         vTaskDelay(pdMS_TO_TICKS(10));
