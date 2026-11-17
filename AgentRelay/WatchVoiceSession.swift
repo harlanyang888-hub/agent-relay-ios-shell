@@ -200,8 +200,17 @@ final class WatchVoiceSession {
         }
         service.watchStopRequested = { [weak self] send in
             guard let self = self else { return }
-            if send { self.finalize(ending: false) { _ in } }
-            else { _ = self.pauseDraft() }
+            if send {
+                self.finalize(ending: false) { _ in
+                    VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                }
+            } else {
+                _ = self.pauseDraft()
+                // Allow the interruption/stop callback to finish before ending its system call.
+                DispatchQueue.main.async {
+                    VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                }
+            }
         }
         service.watchEndRequested = { [weak self] in self?.finalize(ending: true) { _ in } }
     }
