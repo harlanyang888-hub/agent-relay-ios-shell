@@ -18,8 +18,8 @@ final class WatchVoiceSession {
         var duration: Double
         var endpoint: String
         var destination: [String: String]
-        // 'uncertain' is intentionally not retried against the legacy non-idempotent API.
         var state = "pending"
+        var idempotent: Bool? = false
     }
     private struct Journal: Codable {
         var session: String?
@@ -35,6 +35,7 @@ final class WatchVoiceSession {
     private var starting = false
     private var finalizing = false
     private var uploading = false
+    private var uploadTask: UIBackgroundTaskIdentifier = .invalid
     private var epoch = UInt32.random(in: 1...UInt32.max)
     private var revision: UInt16 = 1
     private var fingerprint = ""
@@ -86,7 +87,9 @@ final class WatchVoiceSession {
             }
             let file = directory.appendingPathComponent("journal.json")
             if fm.fileExists(atPath: file.path) { journal = try JSONDecoder().decode(Journal.self, from: Data(contentsOf: file)) }
-            for i in journal.deliveries.indices where journal.deliveries[i].state == "sending" { journal.deliveries[i].state = "uncertain" }
+            for i in journal.deliveries.indices where journal.deliveries[i].state == "sending" {
+                journal.deliveries[i].state = journal.deliveries[i].idempotent == true ? "pending" : "uncertain"
+            }
             if let current = journal.draft?.current {
                 let url = recordings.appendingPathComponent(current)
                 if let file = try? AVAudioFile(forReading: url), file.length > 0 {
@@ -290,54 +293,88 @@ final class WatchVoiceSession {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.confirmEnded(request) }
     }
 
-    // Do not automatically retry an ambiguous POST against the existing gateway.
-    // A persistent, server-deduplicated endpoint is required before enabling that retry.
+    private func finishUploadExecution() {
+        uploading = false
+        if uploadTask != .invalid { UIApplication.shared.endBackgroundTask(uploadTask); uploadTask = .invalid }
+    }
+
+    // Negotiate persistent server deduplication before enabling ambiguous POST retries.
     func flushDeliveries() {
         guard storageReady, !uploading, let delivery = journal.deliveries.first, delivery.state == "pending",
               let cookie = WearableService.shared.authCookie, !cookie.isEmpty,
               let probeURL = URL(string: delivery.endpoint + "/api/bootstrap") else { return }
         uploading = true
+        uploadTask = UIApplication.shared.beginBackgroundTask(withName: "Deliver saved watch voice") { [weak self] in
+            guard let self = self else { return }
+            if self.uploadTask != .invalid { UIApplication.shared.endBackgroundTask(self.uploadTask); self.uploadTask = .invalid }
+        }
         var probe = URLRequest(url: probeURL); probe.timeoutInterval = 8
         probe.setValue(cookie, forHTTPHeaderField: "Cookie"); probe.setValue(delivery.endpoint, forHTTPHeaderField: "Origin")
         URLSession.shared.dataTask(with: probe) { _, response, error in
             DispatchQueue.main.async {
                 guard error == nil, let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                    self.uploading = false; self.lastError = "录音已保存；网关暂不可达或需要登录"; return
+                    self.finishUploadExecution(); self.lastError = "录音已保存；网关暂不可达或需要登录"; return
                 }
-                self.upload(delivery, cookie: cookie)
+                self.checkUploadCapability(delivery, cookie: cookie)
             }
         }.resume()
     }
-    private func upload(_ delivery: Delivery, cookie: String) {
+    private func checkUploadCapability(_ delivery: Delivery, cookie: String) {
+        guard let url = URL(string: delivery.endpoint + "/api/wearable/voice-capabilities") else { finishUploadExecution(); return }
+        var request = URLRequest(url: url); request.timeoutInterval = 8
+        request.setValue(cookie, forHTTPHeaderField: "Cookie"); request.setValue(delivery.endpoint, forHTTPHeaderField: "Origin")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let supported = error == nil && status == 200 && json?["idempotentUploads"] as? Bool == true && json?["version"] as? Int == 1
+                if supported { self.upload(delivery, cookie: cookie, idempotent: true) }
+                else if error == nil, [404, 501].contains(status), delivery.idempotent != true {
+                    self.upload(delivery, cookie: cookie, idempotent: false)
+                } else { self.finishUploadExecution(); self.lastError = "录音已保存；网关补传能力尚未确认" }
+            }
+        }.resume()
+    }
+
+    private func upload(_ delivery: Delivery, cookie: String, idempotent: Bool) {
         guard let index = journal.deliveries.firstIndex(where: { $0.id == delivery.id }),
-              let url = URL(string: delivery.endpoint + "/api/shortcuts/voice") else { uploading = false; return }
+              let url = URL(string: delivery.endpoint + "/api/shortcuts/voice") else { finishUploadExecution(); return }
         do {
             let audio = try Data(contentsOf: recordings.appendingPathComponent(delivery.file))
             var payload: [String: Any] = ["audioBase64": audio.base64EncodedString(), "filename": delivery.file,
                 "mimeType": "audio/m4a", "prompt": "【手表语音指令】", "hostId": "ubuntu", "project": "ubuntu-antigravity", "cwd": "/home/complicated/project/voice-hub"]
             for (key, value) in delivery.destination { payload[key] = value }
             if let id = journal.conversations[delivery.session] { payload["conversationId"] = id }
+            if idempotent { payload["logicalSessionId"] = delivery.session }
             let body = try JSONSerialization.data(withJSONObject: payload)
             journal.deliveries[index].state = "sending"
-            try save() // A process death after this point requires reconciliation, not blind replay.
+            journal.deliveries[index].idempotent = idempotent
+            try save()
             var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 30
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(cookie, forHTTPHeaderField: "Cookie"); request.setValue(delivery.endpoint, forHTTPHeaderField: "Origin")
+            if idempotent { request.setValue(delivery.id, forHTTPHeaderField: "Idempotency-Key") }
             URLSession.shared.dataTask(with: request) { data, response, error in
                 DispatchQueue.main.async {
-                    self.uploading = false
+                    self.finishUploadExecution()
                     guard let index = self.journal.deliveries.firstIndex(where: { $0.id == delivery.id }) else { return }
                     let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                     let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-                    if error == nil, (200...299).contains(status), json?["ok"] as? Bool == true,
+                    let receiptMatches = !idempotent || (json?["idempotentUpload"] as? Bool == true && json?["requestId"] as? String == delivery.id)
+                    if error == nil, (200...299).contains(status), receiptMatches, json?["ok"] as? Bool == true,
                        let conversation = json?["conversationId"] as? String, let message = json?["messageId"] as? String, !message.isEmpty {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries.remove(at: index)
+                        self.lastError = nil
                         self.log("服务器已接收 messageId=\(message) conversationId=\(conversation)")
                     } else if status == 409, let conversation = json?["conversationId"] as? String {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries[index].state = "pending"
                         self.lastError = "录音已保存；Agent 暂时离线"
+                    } else if idempotent, !["voice_result_uncertain", "voice_idempotency_conflict", "voice_session_deleted"].contains(json?["error"] as? String ?? ""),
+                              !(status == 200 && !receiptMatches) {
+                        self.journal.deliveries[index].state = "pending"
+                        self.lastError = "录音已保存，等待网关恢复后以原消息编号补传"
                     } else {
                         self.journal.deliveries[index].state = "uncertain"
                         self.lastError = "上传结果未确认，文件已保留；暂停自动重发以避免重复消息"
@@ -347,7 +384,7 @@ final class WatchVoiceSession {
                     if self.journal.deliveries.first?.id != delivery.id { self.flushDeliveries() }
                 }
             }.resume()
-        } catch { uploading = false; storageReady = false; lastError = error.localizedDescription; log("发送准备失败，文件保留：\(error)") }
+        } catch { finishUploadExecution(); storageReady = false; lastError = error.localizedDescription; log("发送准备失败，文件保留：\(error)") }
     }
     private enum WatchFailure: Error { case storage, audio }
 }
