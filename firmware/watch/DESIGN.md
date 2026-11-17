@@ -6,6 +6,14 @@
 
 手机代码以 v1.0.33-user-approved-ble-recovery 为基线，保留 ASK 授权、CoreBluetooth 状态恢复和 LCK 系统音频激活路径。
 
+## 系统会话与音频通路
+
+LCK 管理系统语音会话，并在系统激活音频后启动采集；AVAudioRecorder 把手机实际输入写为 AAC 文件，之后上传网关。当前没有把实时音频通过 RTP、WebRTC 或 SIP 发送给远端。使用系统通话会话与保存录音文件可以同时成立。
+
+认可版本使用 playAndRecord、voiceChat，同时允许 Bluetooth HFP 和 A2DP。HFP 是蓝牙音频输入通路，A2DP 是蓝牙音频输出通路；允许某个通路不等于实际选中它。以 currentRoute.inputs 和实际采样诊断判断输入设备。手机内置麦克风不因为允许 HFP 就自动成为 8kHz 蓝牙输入。
+
+不设置“严禁 allowBluetooth”的全局规则，这会改变外接蓝牙麦克风的可用性。蓝牙麦克风音质按实际协商结果验证，不承诺所有 HFP 都是 8kHz，也不把 AAC 文件编码采样率当成采集链路带宽。暂停或发送后的微信音频兼容性另行实测。
+
 ## 操作
 
 | 操作 | 手机实际状态 | 结果 |
