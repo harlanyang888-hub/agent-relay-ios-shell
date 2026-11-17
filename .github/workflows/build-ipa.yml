@@ -5,11 +5,11 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
-        profile: [legacy, ask]
+        profile: [ask]
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
