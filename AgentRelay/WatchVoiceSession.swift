@@ -153,7 +153,8 @@ final class WatchVoiceSession {
             return
         }
         updateRevision()
-        guard storageReady, !request.expired(), request.epoch == epoch, request.revision == revision,
+        guard storageReady, request.isFresh(),
+              request.epoch == epoch, request.revision == revision,
               !starting, !finalizing else { finish(request, succeeded: false, error: storageReady ? 3 : 8); return }
         pending = request
         reply(request, .received)
@@ -162,13 +163,16 @@ final class WatchVoiceSession {
         case .bootShort:
             if WearableService.shared.isRecording, journal.draft != nil {
                 let success = pauseDraft()
-                VoiceConversationProbe.shared.pauseAndSend()
-                finish(request, succeeded: success, error: success ? 0 : 8)
+                VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                confirmEnded(request, succeeded: success)
             } else if journal.draft != nil { start(request) }
             else { finish(request, succeeded: false, error: 5) }
         case .bootLong:
             if journal.draft != nil {
-                finalize(ending: false) { [weak self] ok in self?.finish(request, succeeded: ok, error: ok ? 0 : 8) }
+                finalize(ending: false) { [weak self] ok in
+                    VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                    self?.confirmEnded(request, succeeded: ok)
+                }
             } else if WearableService.shared.isRecording { finish(request, succeeded: false, error: 4) }
             else { start(request) }
         case .end:
@@ -184,6 +188,7 @@ final class WatchVoiceSession {
         let service = WearableService.shared
         service.watchRecordingStarted = { [weak self] url in
             guard let self = self, self.journal.draft != nil else { return false }
+            if let old = self.journal.draft?.current, old != url.lastPathComponent { self.journal.unverifiedFiles.append(old) }
             self.journal.draft?.current = url.lastPathComponent
             do { try self.save(); return true }
             catch { self.lastError = error.localizedDescription; return false }
@@ -259,7 +264,8 @@ final class WatchVoiceSession {
         let output = recordings.appendingPathComponent("watch_message_\(messageID).m4a")
         let files = saved.segments.map { recordings.appendingPathComponent($0) }
         let endpoint = WearableService.shared.gatewayBaseURL
-        let destination = UserDefaults.standard.dictionary(forKey: "shortcut_recording_destination") as? [String: String] ?? [:]
+        var destination = UserDefaults.standard.dictionary(forKey: "shortcut_recording_destination") as? [String: String] ?? [:]
+        destination.removeValue(forKey: "conversationId")
         var task: UIBackgroundTaskIdentifier = .invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "Finalize watch voice") {
             if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
@@ -287,10 +293,10 @@ final class WatchVoiceSession {
         }
     }
 
-    private func confirmEnded(_ request: WatchRequest) {
-        if VoiceConversationProbe.shared.callUUID == nil { finish(request, succeeded: true); return }
+    private func confirmEnded(_ request: WatchRequest, succeeded: Bool = true) {
+        if VoiceConversationProbe.shared.callUUID == nil { finish(request, succeeded: succeeded, error: succeeded ? 0 : 8); return }
         if request.expired() { finish(request, succeeded: false, error: 6); return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.confirmEnded(request) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.confirmEnded(request, succeeded: succeeded) }
     }
 
     private func finishUploadExecution() {
@@ -300,7 +306,11 @@ final class WatchVoiceSession {
 
     // Negotiate persistent server deduplication before enabling ambiguous POST retries.
     func flushDeliveries() {
-        guard storageReady, !uploading, let delivery = journal.deliveries.first, delivery.state == "pending",
+        guard storageReady, !uploading, let delivery = journal.deliveries.first, delivery.state == "pending" else { return }
+        guard delivery.endpoint == WearableService.shared.gatewayBaseURL else {
+            lastError = "待发录音属于原网关，请切回原网关后发送"; return
+        }
+        guard
               let cookie = WearableService.shared.authCookie, !cookie.isEmpty,
               let probeURL = URL(string: delivery.endpoint + "/api/bootstrap") else { return }
         uploading = true
@@ -362,7 +372,8 @@ final class WatchVoiceSession {
                     let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                     let receiptMatches = !idempotent || (json?["idempotentUpload"] as? Bool == true && json?["requestId"] as? String == delivery.id)
                     if error == nil, (200...299).contains(status), receiptMatches, json?["ok"] as? Bool == true,
-                       let conversation = json?["conversationId"] as? String, let message = json?["messageId"] as? String, !message.isEmpty {
+                       let conversation = json?["conversationId"] as? String, !conversation.isEmpty,
+                       let message = json?["messageId"] as? String, !message.isEmpty {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries.remove(at: index)
                         self.lastError = nil

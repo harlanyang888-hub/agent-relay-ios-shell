@@ -27,6 +27,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var labCompletion: ((Bool, String) -> Void)?
     private var labDeadline: DispatchWorkItem?
     private var managerReady = false
+    private var preservesWatchDraftOnEnd = false
     var canChangeLaunchPath: Bool { callUUID == nil && !opening && !WearableService.shared.isRecording }
 
     private func traceLaunch(_ stage: String, since start: TimeInterval) {
@@ -305,8 +306,15 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         }
     }
 
+    func endSystemConversationKeepingWatchDraft() {
+        guard callUUID != nil else { return }
+        preservesWatchDraftOnEnd = true
+        end()
+    }
+
     private func submitRecordingBeforeEnding() {
         wantsRecording = false
+        if preservesWatchDraftOnEnd { return }
         if let handler = WearableService.shared.watchEndRequested {
             handler()
             return
@@ -412,6 +420,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         player = nil
         playbackData = nil
         WearableService.shared.leaveCommunicationMode()
+        preservesWatchDraftOnEnd = false
     }
 
     func conversationManagerDidBegin(_ manager: ConversationManager) {

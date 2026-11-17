@@ -9,6 +9,9 @@ data.watchAppend(UInt32(0x89abcdef)); data.watchAppend(UInt16(0x1234)); data.wat
 let request = WatchRequest(data)!
 assert(request.key == "785634120120" && request.epoch == 0x89abcdef && request.revision == 0x1234)
 assert(!request.expired(at: Double(0x70000000) - 1) && request.expired(at: Double(0x70000000)))
+assert(request.isFresh(at: Double(0x70000000) - 8))
+assert(!request.isFresh(at: Double(0x70000000) - 11))
+assert(!request.isFresh(at: Double(0x70000000)))
 assert(WatchRequest(data.dropLast()) == nil)
 var bad = data; bad[3] = 0; assert(WatchRequest(bad) == nil)
 bad = data; bad[8] = 0; bad[9] = 0; assert(WatchRequest(bad) == nil)

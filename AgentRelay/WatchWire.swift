@@ -22,6 +22,9 @@ struct WatchRequest: Equatable {
     func expired(at time: TimeInterval = Date().timeIntervalSince1970) -> Bool {
         action != .sync && Double(expires) <= time
     }
+    func isFresh(at time: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        action == .sync || (!expired(at: time) && Double(expires) <= time + 10)
+    }
 }
 
 struct WatchReply {
