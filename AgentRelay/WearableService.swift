@@ -90,6 +90,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var audioRecorder: AVAudioRecorder?
     private var recordingStartTime: Date?
     private var tempAudioFileURL: URL?
+    // The watch owns a durable multi-segment draft while these callbacks are set.
+    var watchRecordingStarted: ((URL) -> Bool)?
+    var watchStopRequested: ((Bool) -> Void)?
+    var watchEndRequested: (() -> Void)?
 
     // 后台轮询任务与看门狗
     private var replyPollingTask: URLSessionDataTask?
@@ -686,6 +690,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
         let fileURL = directory.appendingPathComponent(fileName)
         self.tempAudioFileURL = fileURL
+        if watchRecordingStarted?(fileURL) == false {
+            recoverFromRecordingStartFailure(message: "无法保存录音草稿，未启动采音")
+            return
+        }
 
         // 标准 AAC 录音配置 (16kHz 单声道高清语音)
         let settings: [String: Any] = [
@@ -741,8 +749,30 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         notifyStatusChanged()
     }
 
+    /// Close one watch segment without uploading or deleting it.
+    func sealWatchSegment() -> (URL, TimeInterval)? {
+        guard let recorder = audioRecorder, let url = tempAudioFileURL else { return nil }
+        let captured = recorder.currentTime
+        recordingHealthTimer?.invalidate()
+        recordingHealthTimer = nil
+        audioRecorder = nil
+        recorder.stop()
+        isRecording = false
+        recordingStartTime = nil
+        tempAudioFileURL = nil
+        releaseRecordingSession()
+        notifyStatusChanged()
+        guard let file = try? AVAudioFile(forReading: url), file.length > 0 else {
+            DeviceDiagnostics.shared.log("WATCH 段文件未通过校验，保留原文件 \(url.lastPathComponent)")
+            return nil
+        }
+        DeviceDiagnostics.shared.log("WATCH 段已封口 duration=\(captured) file=\(url.lastPathComponent)")
+        return (url, Double(file.length) / file.processingFormat.sampleRate)
+    }
+
     public func stopRecording(shouldProcess: Bool = true) {
         guard isRecording else { return }
+        if let handler = watchStopRequested { handler(shouldProcess); return }
         lastVoiceSubmissionQueued = false
 
         recordingHealthTimer?.invalidate()
@@ -1292,6 +1322,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     private func failActiveRecording(message: String) {
         guard isRecording else { return }
+        if let handler = watchStopRequested {
+            DeviceDiagnostics.shared.log(message + "；保存手表录音草稿")
+            handler(false)
+            return
+        }
         recordingHealthTimer?.invalidate()
         recordingHealthTimer = nil
         isRecording = false

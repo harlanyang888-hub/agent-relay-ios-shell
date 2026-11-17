@@ -19,6 +19,8 @@ jobs:
           /tmp/recovery-command-checks
           swiftc AgentRelay/BLEButtonTrial.swift tests/main.swift -o /tmp/ble-existing-checks
           /tmp/ble-existing-checks
+          swiftc AgentRelay/WatchWire.swift AgentRelay/WatchAudioMerge.swift tests/watch/main.swift -o /tmp/watch-checks
+          /tmp/watch-checks
       - name: Configure profile
         run: python3 tools/configure-recovery-build.py ${{ matrix.profile }}
       - name: Build unsigned app

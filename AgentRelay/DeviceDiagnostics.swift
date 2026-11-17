@@ -216,6 +216,19 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private func receiveLabCommand(_ data: Data, from peripheral: CBPeripheral) {
         guard !data.isEmpty, notificationsReady, ackCharacteristic != nil else { return }
+        if data.count == 20, Array(data.prefix(3)) == [65, 82, 3] {
+            guard #available(iOS 17.4, *) else { return }
+            let watch = WatchVoiceSession.shared
+            watch.send = { [weak self, weak peripheral] packet in
+                guard let self = self, let peripheral = peripheral,
+                      self.selected?.identifier == peripheral.identifier,
+                      peripheral.state == .connected else { return }
+                if !self.ackWrites.contains(packet) { self.ackWrites.append(packet) }
+                self.flushAcknowledgements()
+            }
+            watch.receive(data)
+            return
+        }
         guard let command = BLELabCommand(data) else { DeviceDiagnostics.shared.log("LAB 拒绝无效命令"); return }
         if let cached = receipts.result(for: command) {
             DeviceDiagnostics.shared.log("LAB 重复命令 id=\(command.key)，只补确认，不重复执行")
@@ -265,7 +278,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         writingAck = false
         let completed = ackWrites.isEmpty ? nil : ackWrites.removeFirst()
         DeviceDiagnostics.shared.log("LAB ACK 写入结果 error=\(String(describing: error))")
-        if error == nil, completed?.last != 4, let event = eventCharacteristic { peripheral.readValue(for: event) }
+        if error == nil, completed?.count == 17, completed?.last != 4, let event = eventCharacteristic { peripheral.readValue(for: event) }
         flushAcknowledgements()
     }
 
@@ -469,7 +482,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         let data = characteristic.value ?? Data()
         if characteristic.service?.uuid == buttonService, characteristic.uuid == buttonEvent {
             if BLERecoveryLab.enabled {
-                receiveLabCommand(data, from: peripheral)
+                if error == nil { receiveLabCommand(data, from: peripheral) }
                 return
             }
             guard error == nil, characteristic.isNotifying, data.count == 12,
@@ -596,6 +609,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             trialLabel.text = BLEProbe.shared.connectionDescription
             if BLERecoveryLab.enabled { trialLabel.text! += "\n系统会话启动：\(BLERecoveryLab.immediateSystemStart ? "立即请求（无网络预检）" : "先鉴权再请求（原路径）")" }
             if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
+            if #available(iOS 17.4, *), BLERecoveryLab.usesASK { trialLabel.text! += "\n" + WatchVoiceSession.shared.summary }
             trialLabel.textColor = .label
         }
         trialButton.setTitle(trial.active ? "停止采样并生成报告" : "开始 44 秒大疆按键采样", for: .normal)

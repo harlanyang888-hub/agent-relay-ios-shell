@@ -59,7 +59,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             if self.callUUID != nil { self.setPaused(true) }
         }
         labDeadline = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + 28, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + min(28, max(0, command.expires - Date().timeIntervalSince1970)), execute: deadline)
         if !WearableService.shared.isRecording {
             if callUUID == nil { connect() }
             else { resumeRecording() }
@@ -307,6 +307,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     private func submitRecordingBeforeEnding() {
         wantsRecording = false
+        if let handler = WearableService.shared.watchEndRequested {
+            handler()
+            return
+        }
         if WearableService.shared.isRecording {
             log("结束语音会话：提交本轮有效录音")
             WearableService.shared.stopRecording(shouldProcess: true)
