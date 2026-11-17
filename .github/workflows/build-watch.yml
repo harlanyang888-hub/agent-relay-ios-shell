@@ -1,0 +1,32 @@
+name: Build ESP32 watch
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/watch-ask-v3]
+    paths: ['firmware/watch/**', '.github/workflows/build-watch.yml']
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test protocol failure recovery
+        shell: bash
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror firmware/watch/main/watch_protocol.c firmware/watch/tests/protocol_test.c -Ifirmware/watch/main -o /tmp/protocol-test
+          /tmp/protocol-test
+      - name: Build ESP32-S3
+        shell: bash
+        working-directory: firmware/watch
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-relay-watch-development
+          path: |
+            firmware/watch/build/agent_relay_watch.bin
+            firmware/watch/build/bootloader/bootloader.bin
+            firmware/watch/build/partition_table/partition-table.bin
+            firmware/watch/build/flasher_args.json
