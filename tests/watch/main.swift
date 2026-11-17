@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(AVFoundation)
 import AVFoundation
+#endif
 
 var data = Data([65, 82, 3, 1])
 data.watchAppend(UInt32(0x12345678)); data.watchAppend(UInt16(0x2001))
@@ -22,6 +24,7 @@ defaults.removePersistentDomain(forName: suite)
 let response = WatchReply(result: .applied, sequence: 0x2001, epoch: 42, revision: 7, capture: .paused, flags: 2).encoded(at: 100)
 assert(Array(response) == [65,82,3,1,1,32,42,0,0,0,7,0,100,0,0,0,3,2,0,0])
 
+#if canImport(AVFoundation)
 let root = FileManager.default.temporaryDirectory.appendingPathComponent("relay-merge-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: root) }
@@ -52,3 +55,6 @@ func crossings(_ start: Int, _ end: Int) -> Int {
 assert(crossings(1600, 6400) > 100 && crossings(1600, 6400) < 160)
 assert(crossings(12800, 17600) > 230 && crossings(12800, 17600) < 300)
 print("Watch wire, receipt persistence, AAC merge/order checks passed")
+#else
+print("Watch wire and receipt persistence checks passed")
+#endif

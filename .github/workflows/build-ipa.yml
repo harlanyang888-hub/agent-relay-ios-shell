@@ -4,7 +4,16 @@ on:
 permissions:
   contents: read
 jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          swiftc AgentRelay/WatchWire.swift tests/watch/main.swift -o /tmp/watch-wire-checks
+          /tmp/watch-wire-checks
+          swiftc -frontend -parse AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
   build:
+    needs: protocol
     runs-on: macos-26
     strategy:
       fail-fast: false
