@@ -28,12 +28,14 @@ TOKEN = secrets.token_hex(24)
 RUN_ID = secrets.token_hex(8)
 parser = argparse.ArgumentParser()
 parser.add_argument('--port', type=int, default=8767)
+parser.add_argument('--require-encryption', action='store_true', help='Experimental encrypted GATT access; pairing/bond persistence must be verified on both devices')
 parser.add_argument('--state-file', type=Path, default=Path(__file__).resolve().parents[2] / 'agent-relay-ios-shell-builds' / 'ble-recovery-state.json')
 args = parser.parse_args()
 queue = CommandQueue(args.state_file)
 loop = characteristic = provider = stop_event = options = None
 state = {'advertising': 'starting', 'subscribers': 0, 'last': '等待手机订阅', 'last_notify': None,
-         'run_id': RUN_ID, 'pid': os.getpid(), 'started_at': time.time(), 'recovery_count': 0}
+         'run_id': RUN_ID, 'pid': os.getpid(), 'started_at': time.time(), 'recovery_count': 0,
+         'requires_encryption': args.require_encryption}
 log_path = args.state_file.with_suffix('.events.jsonl')
 last_notify_at = 0
 last_press = 0
@@ -247,8 +249,9 @@ async def main():
     async def create(uuid, properties, static_value=None):
         parameters = GattLocalCharacteristicParameters()
         parameters.characteristic_properties = properties
-        parameters.read_protection_level = GattProtectionLevel.PLAIN
-        parameters.write_protection_level = GattProtectionLevel.PLAIN
+        protection = GattProtectionLevel.ENCRYPTION_REQUIRED if args.require_encryption else GattProtectionLevel.PLAIN
+        parameters.read_protection_level = protection
+        parameters.write_protection_level = protection
         if static_value is not None:
             parameters.static_value = buffer(static_value)
         result = await provider.service.create_characteristic_async(uuid, parameters)

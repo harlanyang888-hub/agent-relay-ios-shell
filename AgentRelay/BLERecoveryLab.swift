@@ -29,8 +29,10 @@ final class RecoveryAccessoryBinding {
     func restore() {
         guard ready, !migrating else { return }
         let saved = UserDefaults.standard.string(forKey: BLERecoveryLab.bindingKey)
-        let device = session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved }) ?? session.accessories.first
+        let device = session.accessories.first(where: { $0.bluetoothIdentifier?.uuidString == saved })
+            ?? (saved == nil && session.accessories.count == 1 ? session.accessories.first : nil)
         if let id = device?.bluetoothIdentifier { onAuthorized?(id) }
+        else { DeviceDiagnostics.shared.log("LAB ASK 未找到当前绑定；保留选择，不回退到历史设备") }
     }
 
     func start() {

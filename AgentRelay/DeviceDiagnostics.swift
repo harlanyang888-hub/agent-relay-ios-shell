@@ -45,6 +45,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var notificationsReady = false
     private var connectionRetry: DispatchWorkItem?
     private var connectionFailures = 0
+    private var manuallyDisconnected = false
     private var lastValueLog: [String: (String, TimeInterval)] = [:]
     private var volumeObservation: NSKeyValueObservation?
     private var scanningRequested = false
@@ -65,6 +66,26 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var buttonSequence: UInt32 = 0
     var onChange: (() -> Void)?
     var canRunButtonTrial: Bool { selected?.state == .connected && notificationsReady }
+    var authorizedButtonIDs: [UUID] {
+        guard BLERecoveryLab.usesASK, #available(iOS 18.0, *),
+              let binding = accessoryBinding as? RecoveryAccessoryBinding else { return [] }
+        return binding.session.accessories.compactMap { $0.bluetoothIdentifier }
+    }
+
+    func reconnectAuthorizedButton(_ id: UUID) {
+        guard authorizedButtonIDs.contains(id) else { return }
+        manuallyDisconnected = false
+        connectionRetry?.cancel()
+        connectionFailures = 0
+        if let previous = selected, previous.identifier != id {
+            central?.cancelPeripheralConnection(previous)
+            selected = nil
+            notificationsReady = false
+        }
+        UserDefaults.standard.set(id.uuidString, forKey: BLERecoveryLab.bindingKey)
+        ensureCentral()
+        restoreSavedButton()
+    }
     var connectionDescription: String {
         guard let peripheral = selected else { return "尚未连接设备" }
         return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")"
@@ -77,6 +98,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             accessoryBinding = binding
             binding.onAuthorized = { [weak self] id in
                 guard let self = self else { return }
+                guard !self.manuallyDisconnected else { return }
                 if let old = self.selected, old.identifier != id {
                     self.central?.cancelPeripheralConnection(old)
                     self.selected = nil
@@ -117,6 +139,12 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func scan() {
         if BLERecoveryLab.usesASK, #available(iOS 18.0, *), let binding = accessoryBinding as? RecoveryAccessoryBinding {
+            if manuallyDisconnected {
+                manuallyDisconnected = false
+                DeviceDiagnostics.shared.log("LAB 重新连接当前已授权按钮，不重复显示添加授权")
+                binding.restore()
+                return
+            }
             binding.add()
             return
         }
@@ -148,7 +176,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     private func restoreSavedButton() {
-        guard central?.state == .poweredOn, testDisconnectUntil == nil else { return }
+        guard !manuallyDisconnected, central?.state == .poweredOn, testDisconnectUntil == nil else { return }
         if let selected = selected {
             if selected.state == .connected && !notificationsReady { selected.discoverServices([buttonService]) }
             else if selected.state == .disconnected { central.connect(selected, options: connectionOptions) }
@@ -293,6 +321,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func disconnect() {
+        manuallyDisconnected = true
         connectionRetry?.cancel()
         connectionFailures = 0
         testReconnect?.cancel()
@@ -302,7 +331,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         BLEButtonTrial.shared.finish(reason: "用户断开连接")
         central.cancelPeripheralConnection(peripheral)
         selected = nil
-        UserDefaults.standard.removeObject(forKey: BLERecoveryLab.bindingKey)
+        // A transport disconnect must not forget the user's ASK selection.
+        if !BLERecoveryLab.usesASK { UserDefaults.standard.removeObject(forKey: BLERecoveryLab.bindingKey) }
         notificationsReady = false
         DeviceDiagnostics.shared.log("BLE 已请求断开")
     }
@@ -577,7 +607,21 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         recordButton.setTitle(WearableService.shared.isRecording ? "结束本轮并发送" : "开始说话", for: .normal)
     }
 
-    @objc private func scanBLE() { BLEProbe.shared.scan() }
+    @objc private func scanBLE() {
+        let ids = BLEProbe.shared.authorizedButtonIDs
+        guard !ids.isEmpty else { BLEProbe.shared.scan(); return }
+        let choices = UIAlertController(title: "连接按钮", message: "已授权设备无需重复添加。请选择设备编号；添加新的设备请使用下方入口。", preferredStyle: .actionSheet)
+        let saved = UserDefaults.standard.string(forKey: BLERecoveryLab.bindingKey)
+        for id in ids {
+            let title = "\(id.uuidString.prefix(8))\(id.uuidString == saved ? "（当前）" : "")"
+            choices.addAction(UIAlertAction(title: title, style: .default) { _ in BLEProbe.shared.reconnectAuthorizedButton(id) })
+        }
+        choices.addAction(UIAlertAction(title: "添加新按钮", style: .default) { _ in BLEProbe.shared.scan() })
+        choices.addAction(UIAlertAction(title: "取消", style: .cancel))
+        choices.popoverPresentationController?.sourceView = view
+        choices.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        present(choices, animated: true)
+    }
     @objc private func testLinkLoss() { BLEProbe.shared.simulateLinkLoss() }
     @objc private func toggleLaunchPath() {
         if #available(iOS 17.4, *) {
