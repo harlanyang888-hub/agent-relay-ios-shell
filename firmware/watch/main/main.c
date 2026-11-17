@@ -149,6 +149,7 @@ void app_main(void) {
     uint64_t retry_at=0,sync_at=0,gesture_deadline=0;
     int deferred_gesture=-1;
     ESP_LOGI(TAG,"watch protocol v3; requires matching phone build; no local microphone capture");
+    ESP_LOGI(TAG,"pins BOOT=%d PWR=%d motor=GPIO18",gpio_get_level(GPIO_NUM_0),gpio_get_level(GPIO_NUM_10));
     while(true) {
         uint64_t now=esp_timer_get_time()/1000;app_event event;
         while(xQueueReceive(events,&event,0)==pdTRUE) {
@@ -175,6 +176,8 @@ void app_main(void) {
         int b=gesture(&boot,!gpio_get_level(GPIO_NUM_0),now),p=gesture(&power,gpio_get_level(GPIO_NUM_10),now);
         if(b || p==2) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
+            ESP_LOGI(TAG,"button=%s gesture=%s encrypted=%d subscribed=%d ready=%d",
+                p==2 ? "PWR" : "BOOT",p==2 || b==2 ? "long" : "short",secure,subscribed,state.ready);
             if(!secure || !subscribed || deferred_gesture>=0) pulse(3,40);
             else if(watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
             else if(!state.ready && (!state.pending || state.packet[3]==WATCH_SYNC)) {
