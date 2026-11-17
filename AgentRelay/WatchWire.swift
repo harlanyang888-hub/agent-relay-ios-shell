@@ -46,6 +46,18 @@ struct WatchReply {
     }
 }
 
+enum WatchDeliveryOrder {
+    static func nextIndex(_ entries: [(session: String, state: String)]) -> Int? {
+        var visited = Set<String>()
+        for (index, entry) in entries.enumerated() {
+            // An unresolved message blocks only later messages of that same conversation.
+            guard visited.insert(entry.session).inserted else { continue }
+            if entry.state == "pending" { return index }
+        }
+        return nil
+    }
+}
+
 final class WatchReceipts {
     private struct Entry: Codable { let key: String; let packet: Data; let succeeded: Bool; let error: UInt8 }
     private let defaults: UserDefaults

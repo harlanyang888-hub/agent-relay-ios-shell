@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/watch-ask-v3]
-    paths: ['firmware/watch/**', '.github/workflows/build-watch.yml']
+    paths: ['firmware/watch/main/**', 'firmware/watch/tests/**', 'firmware/watch/CMakeLists.txt', 'firmware/watch/sdkconfig.defaults', '.github/workflows/build-watch.yml']
 jobs:
   firmware:
     runs-on: ubuntu-latest

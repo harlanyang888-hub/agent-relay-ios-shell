@@ -11,6 +11,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var manager: ConversationManager!
     private(set) var callUUID: UUID?
     private(set) var audioActive = false
+    private(set) var audioReleaseConfirmed = true
     private(set) var paused = false
     private(set) var status = "尚未连接"
     private var opening = false
@@ -466,10 +467,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 }
                 action.fulfill()
             case is EndConversationAction:
+                let keepingWatchContext = self.preservesWatchDraftOnEnd
                 self.submitRecordingBeforeEnding()
                 self.cleanup()
                 action.fulfill()
-                self.log("语音会话已结束")
+                self.log(keepingWatchContext ? "系统通话已结束；Agent 对话上下文保留" : "语音会话已结束")
             default:
                 action.fulfill()
             }
@@ -485,6 +487,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         DispatchQueue.main.async {
             guard manager === self.manager, self.callUUID != nil else { return }
             self.audioActive = true
+            self.audioReleaseConfirmed = false
             self.paused = false
             WearableService.shared.communicationAudioDidActivate()
             self.log("系统已启用音频会话")
@@ -496,8 +499,12 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     func conversationManager(_ manager: ConversationManager, didDeactivate audioSession: AVAudioSession) {
         DispatchQueue.main.async {
-            guard manager === self.manager else { return }
+            guard manager === self.manager else {
+                if self.callUUID == nil, !self.audioActive { self.audioReleaseConfirmed = true }
+                return
+            }
             self.audioActive = false
+            self.audioReleaseConfirmed = true
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
             if BLERecoveryLab.enabled {

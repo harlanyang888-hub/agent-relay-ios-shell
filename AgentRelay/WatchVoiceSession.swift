@@ -45,7 +45,7 @@ final class WatchVoiceSession {
     var send: ((Data) -> Void)?
     private(set) var lastError: String?
     var summary: String {
-        let uncertain = journal.deliveries.filter { $0.state == "uncertain" }.count
+        let uncertain = journal.deliveries.filter { ["uncertain", "needsReview"].contains($0.state) }.count
         let name: String
         switch capture {
         case .idle: name = "待命"
@@ -54,7 +54,8 @@ final class WatchVoiceSession {
         case .paused: name = "草稿已暂停"
         case .finalizing: name = "正在保存"
         }
-        return "手表：\(name) · 待发 \(journal.deliveries.count) · 结果未确认 \(uncertain)" + (lastError.map { "\n" + $0 } ?? "")
+        let conversation = journal.session == nil ? "下次新建对话" : "继续当前对话"
+        return "手表：\(name) · \(conversation)\n待发 \(journal.deliveries.count) · 需处理 \(uncertain)" + (lastError.map { "\n" + $0 } ?? "")
     }
 
     private init() {
@@ -294,7 +295,9 @@ final class WatchVoiceSession {
     }
 
     private func confirmEnded(_ request: WatchRequest, succeeded: Bool = true) {
-        if VoiceConversationProbe.shared.callUUID == nil { finish(request, succeeded: succeeded, error: succeeded ? 0 : 8); return }
+        if VoiceConversationProbe.shared.callUUID == nil, VoiceConversationProbe.shared.audioReleaseConfirmed {
+            finish(request, succeeded: succeeded, error: succeeded ? 0 : 8); return
+        }
         if request.expired() { finish(request, succeeded: false, error: 6); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.confirmEnded(request, succeeded: succeeded) }
     }
@@ -303,10 +306,14 @@ final class WatchVoiceSession {
         uploading = false
         if uploadTask != .invalid { UIApplication.shared.endBackgroundTask(uploadTask); uploadTask = .invalid }
     }
+    private var nextDelivery: Delivery? {
+        guard let index = WatchDeliveryOrder.nextIndex(journal.deliveries.map { (session: $0.session, state: $0.state) }) else { return nil }
+        return journal.deliveries[index]
+    }
 
     // Negotiate persistent server deduplication before enabling ambiguous POST retries.
     func flushDeliveries() {
-        guard storageReady, !uploading, let delivery = journal.deliveries.first, delivery.state == "pending" else { return }
+        guard storageReady, !uploading, let delivery = nextDelivery else { return }
         guard delivery.endpoint == WearableService.shared.gatewayBaseURL else {
             lastError = "待发录音属于原网关，请切回原网关后发送"; return
         }
@@ -382,6 +389,9 @@ final class WatchVoiceSession {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries[index].state = "pending"
                         self.lastError = "录音已保存；Agent 暂时离线"
+                    } else if [400, 410, 413, 415, 422].contains(status) {
+                        self.journal.deliveries[index].state = "needsReview"
+                        self.lastError = "服务器拒绝上传 HTTP \(status)，录音文件已保留，需检查文件或原对话"
                     } else if idempotent, !["voice_result_uncertain", "voice_idempotency_conflict", "voice_session_deleted"].contains(json?["error"] as? String ?? ""),
                               !(status == 200 && !receiptMatches) {
                         self.journal.deliveries[index].state = "pending"
@@ -392,7 +402,7 @@ final class WatchVoiceSession {
                         self.log(self.lastError!)
                     }
                     do { try self.save() } catch { self.storageReady = false; self.log("保存发送结果失败：\(error)") }
-                    if self.journal.deliveries.first?.id != delivery.id { self.flushDeliveries() }
+                    if self.nextDelivery?.id != delivery.id { self.flushDeliveries() }
                 }
             }.resume()
         } catch { finishUploadExecution(); storageReady = false; lastError = error.localizedDescription; log("发送准备失败，文件保留：\(error)") }

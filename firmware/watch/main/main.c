@@ -178,12 +178,13 @@ void app_main(void) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
             ESP_LOGI(TAG,"button=%s gesture=%s encrypted=%d subscribed=%d ready=%d",
                 p==2 ? "PWR" : "BOOT",p==2 || b==2 ? "long" : "short",secure,subscribed,state.ready);
-            if(!secure || !subscribed || deferred_gesture>=0) pulse(3,40);
-            else if(watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
-            else if(!state.ready && (!state.pending || state.packet[3]==WATCH_SYNC)) {
-                // One live gesture may wait for its state handshake, never a historical FIFO.
+            if(!secure || !subscribed || deferred_gesture>=0 || (state.pending && state.packet[3]!=WATCH_SYNC)) pulse(3,40);
+            else {
+                // Every gesture gets a fresh phone snapshot, including phone-side UI changes.
+                // Only this one live gesture may wait; there is no historical FIFO.
+                state.ready=false;
                 deferred_gesture=action;gesture_deadline=now+5000;sync_at=0;
-            } else pulse(3,40);
+            }
         }
         if(secure && subscribed && !state.pending && now>=sync_at) {
             if(watch_request(&state,WATCH_SYNC,now)) {transmit(&state,handle);retry_at=now+1000;sync_at=UINT64_MAX;}
