@@ -160,7 +160,14 @@ void app_main(void) {
                 if(event.kind==SUBSCRIBED) {subscribed=event.enabled;if(!subscribed) watch_disconnected(&state);else sync_at=0;}
                 if(event.kind==PHONE_STATE && secure && subscribed) {
                     int result=watch_accept(&state,event.data,20,now);
-                    if(result==1) pulse(state.capture==WATCH_PAUSED ? 2 : 1,state.capture==WATCH_IDLE ? 200 : 60);
+                    ESP_LOGI(TAG,"phone reply result=%u accepted=%d seq=%u capture=%u error=%u pending=%d",
+                        event.data[3],result,(unsigned)(event.data[4]|event.data[5]<<8),event.data[16],event.data[18],state.pending);
+                    if(result==1) {
+                        unsigned count=state.capture==WATCH_PAUSED ? 2 : 1;
+                        unsigned duration=state.capture==WATCH_IDLE ? 250 : 150;
+                        ESP_LOGI(TAG,"confirmed haptic count=%u duration_ms=%u",count,duration);
+                        pulse(count,duration);
+                    }
                     if(result==2) pulse(3,40);
                     if(state.ready && !state.pending) sync_at=UINT64_MAX;
                 }
