@@ -453,6 +453,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func notifyStatusChanged() {
+        DeviceDiagnostics.shared.updateRecordingRuntime(recording: isRecording, capturedSeconds: capturedRecordingDuration)
         delegate?.wearableServiceDidChangeDeviceStatus(
             connected: isBluetoothConnected,
             deviceName: currentDeviceName,

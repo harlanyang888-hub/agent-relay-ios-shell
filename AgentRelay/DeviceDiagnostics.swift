@@ -19,6 +19,16 @@ final class DeviceDiagnostics {
     private let runID = UUID().uuidString
     private var scheduledUpload: DispatchWorkItem?
     private(set) var uploadStatus = "等待登录后上报"
+    private var recordingRuntime: [String: Any] = [:]
+
+    func updateRecordingRuntime(recording: Bool, capturedSeconds: Double) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.updateRecordingRuntime(recording: recording, capturedSeconds: capturedSeconds) }
+            return
+        }
+        recordingRuntime = ["recording": recording, "capturedSeconds": capturedSeconds]
+        generation += 1
+    }
 
     func configureUpload(endpoint: String, cookie: String?) {
         guard URL(string: endpoint)?.scheme == "https" else { return }
@@ -47,7 +57,7 @@ final class DeviceDiagnostics {
         }
         let payload: [String: Any] = ["schemaVersion": 1, "generatedAt": now,
             "buildVersion": "\(version) (\(build))", "environment": ["platform": "iOS", "os": UIDevice.current.systemVersion],
-            "runtime": ["runId": runID, "state": UIApplication.shared.applicationState.rawValue], "entries": entries]
+            "runtime": recordingRuntime.merging(["runId": runID, "state": UIApplication.shared.applicationState.rawValue]) { _, new in new }, "entries": entries]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"; request.timeoutInterval = 10; request.httpBody = body
