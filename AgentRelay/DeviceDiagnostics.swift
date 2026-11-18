@@ -629,6 +629,9 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             trialLabel.text = BLEProbe.shared.connectionDescription
             let input = WearableService.shared.recordingInputName
             trialLabel.text! += "\n实际录音输入：\(input.isEmpty ? "尚未启用" : input)"
+            if WearableService.shared.isRecording, let warning = WearableService.shared.recordingInputWarning {
+                trialLabel.text! += "\n⚠️ \(warning)"
+            }
             if BLERecoveryLab.enabled { trialLabel.text! += "\n系统会话启动：\(BLERecoveryLab.immediateSystemStart ? "立即请求（无网络预检）" : "先鉴权再请求（原路径）")" }
             if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
             if #available(iOS 17.4, *), BLERecoveryLab.usesASK { trialLabel.text! += "\n" + WatchVoiceSession.shared.summary }
@@ -660,7 +663,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
     @objc private func chooseMicrophone() {
         let session = AVAudioSession.sharedInstance()
-        let choices = UIAlertController(title: "录音麦克风", message: "选择对下一段录音生效，仅列出 iOS 当前提供的输入。若只看到手机或耳机，请在语音会话启用时再次查看。", preferredStyle: .actionSheet)
+        let choices = UIAlertController(title: "录音麦克风", message: "设置下一段录音优先使用的输入。系统可能未执行切换，请以页面实际输入为准；不匹配时显示提示。", preferredStyle: .actionSheet)
         choices.addAction(UIAlertAction(title: "自动（优先大疆及外接麦克风）", style: .default) { _ in
             WearableService.shared.preferredRecordingInputUID = nil
             DeviceDiagnostics.shared.log("Audio input preference=自动")

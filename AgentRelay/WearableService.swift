@@ -77,17 +77,13 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public var communicationConversationId: String?
     public private(set) var lastVoiceSubmissionQueued = false
     private var communicationGeneration = UUID()
-    private var inputRouteDeadline: Date?
-    private var inputRouteRetry: DispatchWorkItem?
-    public var isWaitingForInputRoute: Bool { inputRouteRetry != nil && inputRouteDeadline != nil }
+    private var requestedRecordingInput: AVAudioSessionPortDescription?
+    public private(set) var recordingInputWarning: String?
     public var preferredRecordingInputUID: String? {
         get { UserDefaults.standard.string(forKey: "relay_recording_input_uid") }
         set { UserDefaults.standard.set(newValue, forKey: "relay_recording_input_uid") }
     }
-    public func cancelPendingInputRoute() {
-        inputRouteRetry?.cancel(); inputRouteRetry = nil; inputRouteDeadline = nil
-    }
-    private func selectRecordingInput(_ session: AVAudioSession) throws {
+    private func selectRecordingInput(_ session: AVAudioSession, retryAfterPreparation: Bool = false) throws {
         let inputs = session.availableInputs ?? []
         DeviceDiagnostics.shared.log("Audio inputs available=" + inputs.map { "\($0.portName) [\($0.portType.rawValue)] uid=\($0.uid)" }.joined(separator: "; "))
         let preferred: AVAudioSessionPortDescription?
@@ -104,8 +100,20 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
               ?? inputs.first { $0.portType == .bluetoothHFP }
               ?? inputs.first { $0.portType == .builtInMic }
         }
-        if session.preferredInput?.uid != preferred?.uid { try session.setPreferredInput(preferred) }
+        requestedRecordingInput = preferred
+        if retryAfterPreparation || session.preferredInput?.uid != preferred?.uid { try session.setPreferredInput(preferred) }
         DeviceDiagnostics.shared.log("Audio input requested=\(preferred?.portName ?? "系统自动") actual=\(session.currentRoute.inputs.map { $0.portName })")
+    }
+    private func updateRecordingInputWarning() {
+        let actual = AVAudioSession.sharedInstance().currentRoute.inputs
+        let warning: String?
+        if let desired = requestedRecordingInput, !actual.contains(where: { $0.uid == desired.uid }) {
+            warning = "未切换到\(desired.portName)；实际输入：\(actual.map { $0.portName }.joined(separator: "、"))"
+        } else { warning = nil }
+        if recordingInputWarning != warning {
+            recordingInputWarning = warning
+            DeviceDiagnostics.shared.log("Audio input verification " + (warning ?? "已匹配请求输入"))
+        }
     }
     public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false
@@ -218,6 +226,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
             DeviceDiagnostics.shared.log("Audio route reason=\(reason) input=\(AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portName }) recording=\(self.isRecording)")
             self.notifyStatusChanged()
+            if self.isRecording { self.updateRecordingInputWarning() }
             // 核心修复：路由变更绝不可盲目重启播放器，杜绝微信点开麦克风时被静音播放器顶掉的问题！
         }
     }
@@ -608,7 +617,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func leaveCommunicationMode() {
-        cancelPendingInputRoute()
+        requestedRecordingInput = nil
+        recordingInputWarning = nil
         communicationGeneration = UUID()
         if isRecording { stopRecording(shouldProcess: false) }
         stopPolling()
@@ -698,25 +708,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             recoverFromRecordingStartFailure(message: "录音失败：当前无法启用麦克风")
             return
         }
-        if communicationMode, let desired = session.preferredInput,
-           !session.currentRoute.inputs.contains(where: { $0.uid == desired.uid }) {
-            if inputRouteDeadline == nil { inputRouteDeadline = Date().addingTimeInterval(2) }
-            guard Date() < inputRouteDeadline! else {
-                cancelPendingInputRoute()
-                recoverFromRecordingStartFailure(message: "麦克风未切换到指定输入，请检查录音麦克风设置")
-                return
-            }
-            let generation = communicationGeneration
-            inputRouteRetry?.cancel()
-            let retry = DispatchWorkItem { [weak self] in
-                guard let self = self, self.communicationMode, self.communicationGeneration == generation else { return }
-                self.startRecording()
-            }
-            inputRouteRetry = retry
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: retry)
-            return
-        }
-        cancelPendingInputRoute()
         let inputDescription = session.currentRoute.inputs
             .map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", ")
         print("[WearableService] 录音输入=\(inputDescription), appState=\(UIApplication.shared.applicationState.rawValue)")
@@ -752,6 +743,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             recorder.delegate = self
             recorder.isMeteringEnabled = true
             let prepared = recorder.prepareToRecord()
+            // A preferred route is a request. Never gate I/O startup on its immediate effect.
+            if communicationMode || shortcutRecording {
+                do { try selectRecordingInput(session, retryAfterPreparation: true) }
+                catch { DeviceDiagnostics.shared.log("Audio input retry after preparation failed: \(error.localizedDescription)") }
+            }
             // record() 自身会执行 prepare，不因为预准备失败就跳过实际启动。
             let started = recorder.record()
             DeviceDiagnostics.shared.log("Recorder result prepared=\(prepared) started=\(started) isRecording=\(recorder.isRecording) category=\(session.category.rawValue)")
@@ -765,6 +761,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             self.audioRecorder = recorder
             self.isRecording = true
             self.recordingStartTime = Date()
+            updateRecordingInputWarning()
 
             startRecordingHealthMonitor()
 
@@ -780,7 +777,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     private func recoverFromRecordingStartFailure(message: String) {
-        cancelPendingInputRoute()
         DeviceDiagnostics.shared.log(message)
         audioRecorder = nil
         isRecording = false
@@ -1355,6 +1351,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                     confirmed = true
                     recorder.updateMeters()
                     DeviceDiagnostics.shared.log("Record capture confirmed time=\(captured) peakDB=\(recorder.peakPower(forChannel: 0))")
+                    self.updateRecordingInputWarning()
                     self.playBeepStart()
                 }
             }
