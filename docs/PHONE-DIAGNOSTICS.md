@@ -24,3 +24,23 @@ python tools/read_phone_diagnostics.py --lines 150
 保留 NVS 和配对信息重启手表后，观察窗口尚未捕获手机重连，仍需手机端配合。
 手机包增加受保护身份读取的有限重试，并分别展示加密认证和通知状态。
 这不代表已验证自动恢复成功，也不解决此前双蓝牙设备的麦克风路由问题。
+
+## 1.0.48 安装后的继续排查
+
+手机端尚无原生日志上报，服务端近一小时也没有 `/api/client-diagnostics` 请求。
+因此日志链路尚未完成实机验收，不能声称已经可以远程实时读取手机状态。
+待用户确认首页登录/网络状态；不要把“没有报告”当作没有按键事件。
+
+COM4 再次实机捕获 BOOT 长按仍为 `encrypted=0 subscribed=1 ready=0`。
+诊断固件 8f61d15 已在保留 NVS 的条件下刷入，重启后捕获：
+
+```
+GAP connect status=0 handle=1
+GAP security initiate handle=1 rc=0
+GAP repeat pairing handle=1; existing bond retained; physical pairing reset required
+```
+
+这证实手机请求重新配对时，手表因已有旧配对记录而忽略请求。
+6186ebb 增加物理 BOOT 八秒恢复入口，只在已确认冲突且未加密的当前连接生效。
+在 NimBLE host 队列内校验连接和对端身份，删除当前对端配对后断线重连。
+需要用户物理长按配合，尚不能标记录音恢复成功。
