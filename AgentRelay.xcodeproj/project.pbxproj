@@ -10,6 +10,7 @@
         11000012 /* WatchWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000012; };
         11000013 /* WatchVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000013; };
         11000014 /* WatchAudioMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000014; };
+        11000015 /* SystemAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000015; };
 		11000010 /* BLELabCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000010 /* BLELabCommand.swift */; };
 		11000011 /* BLERecoveryLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000011 /* BLERecoveryLab.swift */; };
 		11000009 /* VoiceConversationProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000009 /* VoiceConversationProbe.swift */; };
@@ -50,6 +51,7 @@
         21000012 /* WatchWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchWire.swift; sourceTree = "<group>"; };
         21000013 /* WatchVoiceSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchVoiceSession.swift; sourceTree = "<group>"; };
         21000014 /* WatchAudioMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAudioMerge.swift; sourceTree = "<group>"; };
+        21000015 /* SystemAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCapture.swift; sourceTree = "<group>"; };
 		21000010 /* BLELabCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLELabCommand.swift; sourceTree = "<group>"; };
 		21000011 /* BLERecoveryLab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLERecoveryLab.swift; sourceTree = "<group>"; };
 		21000009 /* VoiceConversationProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceConversationProbe.swift; sourceTree = "<group>"; };
@@ -106,6 +108,7 @@
                 21000012 /* WatchWire.swift */,
                 21000013 /* WatchVoiceSession.swift */,
                 21000014 /* WatchAudioMerge.swift */,
+                21000015 /* SystemAudioCapture.swift */,
 				21000003 /* Info.plist */,
 			);
 			path = AgentRelay;
@@ -238,6 +241,7 @@
                 11000012 /* WatchWire.swift in Sources */,
                 11000013 /* WatchVoiceSession.swift in Sources */,
                 11000014 /* WatchAudioMerge.swift in Sources */,
+                11000015 /* SystemAudioCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

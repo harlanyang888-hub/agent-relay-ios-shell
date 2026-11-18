@@ -153,7 +153,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var beepStartPlayer: AVAudioPlayer?
     private var beepEndPlayer: AVAudioPlayer?
     private var speechPlayer: AVAudioPlayer?
-    private var audioRecorder: AVAudioRecorder?
+    private var audioRecorder: RelayAudioCapture?
     private var recordingStartTime: Date?
     private var tempAudioFileURL: URL?
     // The watch owns a durable multi-segment draft while these callbacks are set.
@@ -766,10 +766,33 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         ]
 
         do {
-            let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
-            recorder.delegate = self
-            recorder.isMeteringEnabled = true
-            let prepared = recorder.prepareToRecord()
+            let recorder: RelayAudioCapture
+            let prepared: Bool
+            let started: Bool
+            if communicationMode && BLERecoveryLab.usesASK {
+                let capture = try SystemAudioCapture(url: fileURL)
+                capture.onFailure = { [weak self, weak capture] error in
+                    guard let self = self, let capture = capture,
+                          self.audioRecorder === capture, self.isRecording else { return }
+                    DeviceDiagnostics.shared.log("Audio engine capture error=\(error.localizedDescription)")
+                    self.failActiveRecording(message: "系统采音中断，已保留录音草稿")
+                }
+                capture.onConfigurationChange = {
+                    DeviceDiagnostics.shared.log("Audio engine configuration changed; preserving segment across hardware route change")
+                }
+                try capture.start()
+                recorder = capture
+                prepared = true
+                started = true
+                DeviceDiagnostics.shared.log("Audio capture backend=AVAudioEngine activation=system-managed")
+            } else {
+                let legacy = try AVAudioRecorder(url: fileURL, settings: settings)
+                legacy.delegate = self
+                legacy.isMeteringEnabled = true
+                prepared = legacy.prepareToRecord()
+                started = legacy.record()
+                recorder = legacy
+            }
             // A preferred route is a request. Never gate I/O startup on its immediate effect.
             if communicationMode || shortcutRecording {
                 do { try selectRecordingInput(session, retryAfterPreparation: true) }
@@ -783,7 +806,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 }
             }
             // record() 自身会执行 prepare，不因为预准备失败就跳过实际启动。
-            let started = recorder.record()
             DeviceDiagnostics.shared.log("Recorder result prepared=\(prepared) started=\(started) isRecording=\(recorder.isRecording) category=\(session.category.rawValue)")
             guard started else {
                 recorder.stop()
@@ -811,7 +833,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         }
     }
 
-    private func restoreSelectedInputAfterRecordingStarts(_ recorder: AVAudioRecorder) {
+    private func restoreSelectedInputAfterRecordingStarts(_ recorder: RelayAudioCapture) {
         guard let selectedUID = preferredRecordingInputUID else { return }
         // LCK can establish its default route while I/O starts. Retry only after
         // record(), with a fresh availableInputs object, and verify the real route.

@@ -14,7 +14,7 @@ jobs:
       - run: |
           swiftc AgentRelay/WatchWire.swift tests/watch/main.swift -o /tmp/watch-wire-checks
           /tmp/watch-wire-checks
-          swiftc -frontend -parse AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
+          swiftc -frontend -parse AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/SystemAudioCapture.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
   build:
     needs: protocol
     runs-on: macos-26-intel
@@ -44,6 +44,8 @@ jobs:
           /tmp/ble-existing-checks
           swiftc AgentRelay/WatchWire.swift AgentRelay/WatchAudioMerge.swift tests/watch/main.swift -o /tmp/watch-checks
           /tmp/watch-checks
+          swiftc AgentRelay/SystemAudioCapture.swift tests/system-audio/main.swift -o /tmp/system-audio-checks
+          /tmp/system-audio-checks
       - name: Configure profile
         run: python3 tools/configure-recovery-build.py ${{ matrix.profile }}
       - name: Build unsigned app
