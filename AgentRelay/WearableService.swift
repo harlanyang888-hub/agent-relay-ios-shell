@@ -77,6 +77,35 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public var communicationConversationId: String?
     public private(set) var lastVoiceSubmissionQueued = false
     private var communicationGeneration = UUID()
+    private var inputRouteDeadline: Date?
+    private var inputRouteRetry: DispatchWorkItem?
+    public var preferredRecordingInputUID: String? {
+        get { UserDefaults.standard.string(forKey: "relay_recording_input_uid") }
+        set { UserDefaults.standard.set(newValue, forKey: "relay_recording_input_uid") }
+    }
+    public func cancelPendingInputRoute() {
+        inputRouteRetry?.cancel(); inputRouteRetry = nil; inputRouteDeadline = nil
+    }
+    private func selectRecordingInput(_ session: AVAudioSession) throws {
+        let inputs = session.availableInputs ?? []
+        DeviceDiagnostics.shared.log("Audio inputs available=" + inputs.map { "\($0.portName) [\($0.portType.rawValue)] uid=\($0.uid)" }.joined(separator: "; "))
+        let preferred: AVAudioSessionPortDescription?
+        if let saved = preferredRecordingInputUID {
+            guard let input = inputs.first(where: { $0.uid == saved }) else {
+                throw NSError(domain: "RelayAudioInput", code: 1, userInfo: [NSLocalizedDescriptionKey: "指定的录音麦克风不可用，请连接该设备或改为自动选择"])
+            }
+            preferred = input
+        } else {
+            preferred = inputs.first {
+                let name = $0.portName.lowercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
+                return name.contains("dji") || name.contains("大疆") || name.contains("micmini")
+            } ?? inputs.first { $0.portType == .usbAudio || $0.portType == .headsetMic }
+              ?? inputs.first { $0.portType == .bluetoothHFP }
+              ?? inputs.first { $0.portType == .builtInMic }
+        }
+        if session.preferredInput?.uid != preferred?.uid { try session.setPreferredInput(preferred) }
+        DeviceDiagnostics.shared.log("Audio input requested=\(preferred?.portName ?? "系统自动") actual=\(session.currentRoute.inputs.map { $0.portName })")
+    }
     public var communicationPlaybackHandler: ((Data) -> Void)?
     public private(set) var isPlayingAudio = false
     public private(set) var currentDeviceName = "扬声器 / 听筒"
@@ -152,9 +181,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         let session = AVAudioSession.sharedInstance()
         do {
             if communicationMode {
-                let preferred = session.availableInputs?.first { $0.portName.localizedCaseInsensitiveContains("DJI") }
-                    ?? session.availableInputs?.first { $0.portType == .bluetoothHFP }
-                if forRecording { try session.setPreferredInput(preferred) }
+                if forRecording { try selectRecordingInput(session) }
                 DeviceDiagnostics.shared.log("LCK audio system-managed input=\(session.currentRoute.inputs.map { $0.portName })")
                 return true
             }
@@ -170,11 +197,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             try session.setActive(true)
             if shortcutRecording && forRecording {
                 // 快捷录音允许 HFP 输入；优先大疆，其次其他外接输入，再退回手机。
-                let inputs = session.availableInputs ?? []
-                let preferred = inputs.first { $0.portName.localizedCaseInsensitiveContains("DJI") }
-                    ?? inputs.first { $0.portType == .bluetoothHFP || $0.portType == .usbAudio || $0.portType == .headsetMic }
-                    ?? inputs.first { $0.portType == .builtInMic }
-                try session.setPreferredInput(preferred)
+                try selectRecordingInput(session)
             }
             DeviceDiagnostics.shared.log("Audio session active recording=\(forRecording) category=\(session.category.rawValue) inputAvailable=\(session.isInputAvailable) sampleRate=\(session.sampleRate)")
             print("[WearableService] 音频会话配置成功 (forRecording=\(forRecording), shortcut=\(shortcutRecording))")
@@ -584,6 +607,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func leaveCommunicationMode() {
+        cancelPendingInputRoute()
         communicationGeneration = UUID()
         if isRecording { stopRecording(shouldProcess: false) }
         stopPolling()
@@ -673,6 +697,25 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             recoverFromRecordingStartFailure(message: "录音失败：当前无法启用麦克风")
             return
         }
+        if communicationMode, let desired = session.preferredInput,
+           !session.currentRoute.inputs.contains(where: { $0.uid == desired.uid }) {
+            if inputRouteDeadline == nil { inputRouteDeadline = Date().addingTimeInterval(2) }
+            guard Date() < inputRouteDeadline! else {
+                cancelPendingInputRoute()
+                recoverFromRecordingStartFailure(message: "麦克风未切换到指定输入，请检查录音麦克风设置")
+                return
+            }
+            let generation = communicationGeneration
+            inputRouteRetry?.cancel()
+            let retry = DispatchWorkItem { [weak self] in
+                guard let self = self, self.communicationMode, self.communicationGeneration == generation else { return }
+                self.startRecording()
+            }
+            inputRouteRetry = retry
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: retry)
+            return
+        }
+        cancelPendingInputRoute()
         let inputDescription = session.currentRoute.inputs
             .map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ", ")
         print("[WearableService] 录音输入=\(inputDescription), appState=\(UIApplication.shared.applicationState.rawValue)")
@@ -736,6 +779,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     private func recoverFromRecordingStartFailure(message: String) {
+        cancelPendingInputRoute()
         DeviceDiagnostics.shared.log(message)
         audioRecorder = nil
         isRecording = false

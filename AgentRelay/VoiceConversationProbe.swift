@@ -210,6 +210,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func pauseAndSend() {
+        WearableService.shared.cancelPendingInputRoute()
         guard callUUID != nil else { return }
         wantsRecording = false
         confirmedTimer?.invalidate()

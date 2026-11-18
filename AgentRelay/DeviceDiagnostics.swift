@@ -592,7 +592,10 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let launchPath = UIButton(type: .system)
         launchPath.setTitle("启动对照：切换立即请求／先鉴权", for: .normal)
         launchPath.addTarget(self, action: #selector(toggleLaunchPath), for: .touchUpInside)
-        let stack = UIStackView(arrangedSubviews: [controls] + (BLERecoveryLab.enabled ? [linkTest, launchPath] : []) + [help, trialLabel, recordButton, table, logView])
+        let microphone = UIButton(type: .system)
+        microphone.setTitle("选择录音麦克风", for: .normal)
+        microphone.addTarget(self, action: #selector(chooseMicrophone), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, launchPath] : []) + [help, trialLabel, recordButton, table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -624,6 +627,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             }
         } else {
             trialLabel.text = BLEProbe.shared.connectionDescription
+            let input = WearableService.shared.recordingInputName
+            trialLabel.text! += "\n实际录音输入：\(input.isEmpty ? "尚未启用" : input)"
             if BLERecoveryLab.enabled { trialLabel.text! += "\n系统会话启动：\(BLERecoveryLab.immediateSystemStart ? "立即请求（无网络预检）" : "先鉴权再请求（原路径）")" }
             if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
             if #available(iOS 17.4, *), BLERecoveryLab.usesASK { trialLabel.text! += "\n" + WatchVoiceSession.shared.summary }
@@ -647,6 +652,25 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         for (index, id) in ids.enumerated() {
             let title = "\(BLEProbe.shared.authorizedButtonName(id)) · \(index + 1)\(id.uuidString == saved ? "（当前）" : "")"
             choices.addAction(UIAlertAction(title: title, style: .default) { _ in BLEProbe.shared.reconnectAuthorizedButton(id) })
+        }
+        choices.addAction(UIAlertAction(title: "取消", style: .cancel))
+        choices.popoverPresentationController?.sourceView = view
+        choices.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        present(choices, animated: true)
+    }
+    @objc private func chooseMicrophone() {
+        let session = AVAudioSession.sharedInstance()
+        let choices = UIAlertController(title: "录音麦克风", message: "选择对下一段录音生效，仅列出 iOS 当前提供的输入。若只看到手机或耳机，请在语音会话启用时再次查看。", preferredStyle: .actionSheet)
+        choices.addAction(UIAlertAction(title: "自动（优先大疆及外接麦克风）", style: .default) { _ in
+            WearableService.shared.preferredRecordingInputUID = nil
+            DeviceDiagnostics.shared.log("Audio input preference=自动")
+        })
+        for input in session.availableInputs ?? [] {
+            let title = input.portName + (input.uid == WearableService.shared.preferredRecordingInputUID ? "（已选）" : "")
+            choices.addAction(UIAlertAction(title: title, style: .default) { _ in
+                WearableService.shared.preferredRecordingInputUID = input.uid
+                DeviceDiagnostics.shared.log("Audio input preference=\(input.portName)")
+            })
         }
         choices.addAction(UIAlertAction(title: "取消", style: .cancel))
         choices.popoverPresentationController?.sourceView = view
