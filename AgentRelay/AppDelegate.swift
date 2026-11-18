@@ -5,6 +5,8 @@ import AVFoundation
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     private var webViewController: WebViewController?
+    private var pendingInterfaceURL: URL?
+    var nativeAudioIsolationActive: Bool { BLERecoveryLab.nativeAudioIsolation && webViewController == nil }
     private var lastHandledURLString: String?
     private var lastHandledTime: TimeInterval = 0
     private var pendingRecordingAction: String?
@@ -24,14 +26,38 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         // 空闲不占用音频；专用 BLE 按键按需建立系统语音会话。
 
-        let webVC = WebViewController()
-        self.webViewController = webVC
-
-        window?.rootViewController = webVC
+        if BLERecoveryLab.nativeAudioIsolation {
+            DeviceDiagnostics.shared.log("AUDIO ISOLATION boot nativeOnly=true webViewCreated=false preparedTonePlayers=false")
+            window?.rootViewController = UINavigationController(rootViewController: DeviceDiagnosticsViewController())
+        } else {
+            let webVC = WebViewController()
+            self.webViewController = webVC
+            window?.rootViewController = webVC
+        }
         window?.makeKeyAndVisible()
 
         if let launchURL = launchOptions?[.url] as? URL {
             handleIncomingURLSafely(launchURL)
+        }
+        return true
+    }
+
+    @discardableResult
+    func showWebInterface() -> Bool {
+        guard !WearableService.shared.isRecording, !WearableService.shared.inputComparisonActive else { return false }
+        if #available(iOS 17.4, *),
+           !VoiceConversationProbe.shared.canChangeLaunchPath || !VoiceConversationProbe.shared.audioReleaseConfirmed { return false }
+        if webViewController == nil {
+            DeviceDiagnostics.shared.log("AUDIO ISOLATION user opened web interface; nativeOnly=false for remainder of process")
+            let webVC = WebViewController()
+            webViewController = webVC
+            window?.rootViewController = webVC
+            window?.makeKeyAndVisible()
+            webVC.loadViewIfNeeded()
+        }
+        if let pending = pendingInterfaceURL {
+            pendingInterfaceURL = nil
+            webViewController?.handleIncomingURL(pending)
         }
         return true
     }
@@ -73,7 +99,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             performPendingRecordingAction()
             return
         }
-        webViewController?.handleIncomingURL(url)
+        if let webVC = webViewController { webVC.handleIncomingURL(url) }
+        else {
+            pendingInterfaceURL = url
+            if !showWebInterface() { DeviceDiagnostics.shared.log("AUDIO ISOLATION deferred web link until audio is released") }
+        }
     }
 
     private func performPendingRecordingAction() {

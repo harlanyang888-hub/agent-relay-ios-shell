@@ -14,7 +14,7 @@ jobs:
       - run: |
           swiftc AgentRelay/WatchWire.swift tests/watch/main.swift -o /tmp/watch-wire-checks
           /tmp/watch-wire-checks
-          swiftc -frontend -parse AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/SystemAudioCapture.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
+          swiftc -frontend -parse AgentRelay/AppDelegate.swift AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/SystemAudioCapture.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
   build:
     needs: protocol
     runs-on: macos-26-intel

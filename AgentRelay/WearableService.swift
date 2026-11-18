@@ -285,7 +285,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private override init() {
         super.init()
         feedbackGenerator.prepare()
-        setupBeepPlayers()
+        if !BLERecoveryLab.nativeAudioIsolation { setupBeepPlayers() }
+        else { DeviceDiagnostics.shared.log("AUDIO ISOLATION skipped tone-player construction and preparation") }
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）

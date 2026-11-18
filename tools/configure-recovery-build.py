@@ -9,11 +9,12 @@ root = Path(__file__).resolve().parents[1]
 for name in ['AgentRelay/Info.plist', 'ShareExtension/Info.plist']:
     path = root / name
     data = plistlib.loads(path.read_bytes())
-    data['CFBundleShortVersionString'] = '1.0.34' if args.profile == 'legacy' else '1.0.45'
-    data['CFBundleVersion'] = '35' if args.profile == 'legacy' else '46'
+    data['CFBundleShortVersionString'] = '1.0.34' if args.profile == 'legacy' else '1.0.46'
+    data['CFBundleVersion'] = '35' if args.profile == 'legacy' else '47'
     if name.startswith('AgentRelay/'):
         data['RelayBLERecoveryLab'] = True
         data['RelayUseAccessorySetupKit'] = args.profile == 'ask'
+        data['RelayNativeAudioIsolation'] = args.profile == 'ask'
         for key in list(data):
             if key.startswith('NSAccessorySetup'):
                 del data[key]
