@@ -614,6 +614,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 }
 
+#if !RELAY_HEADLESS_TEST
 @available(iOS 17.4, *)
 final class VoiceConversationProbeController: UIViewController {
     private let label = UILabel()
@@ -664,3 +665,4 @@ final class VoiceConversationProbeController: UIViewController {
     @objc private func copyLog() { UIPasteboard.general.string = DeviceDiagnostics.shared.text }
     deinit { timer?.invalidate() }
 }
+#endif
