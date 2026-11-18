@@ -47,10 +47,16 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return UserDefaults.standard.string(forKey: "wearable_auth_cookie")
         }
         set {
+            let previous = UserDefaults.standard.string(forKey: "wearable_auth_cookie")
             if let val = newValue, !val.isEmpty {
                 UserDefaults.standard.set(val, forKey: "wearable_auth_cookie")
             } else {
                 UserDefaults.standard.removeObject(forKey: "wearable_auth_cookie")
+            }
+            if previous != newValue {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("RelayAuthenticationChanged"), object: nil)
+                }
             }
         }
     }

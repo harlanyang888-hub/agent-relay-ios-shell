@@ -7,6 +7,8 @@ struct UIBackgroundTaskIdentifier: Equatable {
     static let invalid = Self(rawValue: -1)
 }
 final class UIApplication {
+    static let didBecomeActiveNotification = Notification.Name("TestAppActive")
+    static let protectedDataDidBecomeAvailableNotification = Notification.Name("TestAppUnlocked")
     enum State: Int { case active, inactive, background }
     static let shared = UIApplication()
     var applicationState: State = .active
@@ -71,11 +73,29 @@ final class WearableService {
     var gatewayBaseURL = "http://127.0.0.1:1"
     var startFails = false
     var starts = 0
+    var captureDirectory: URL?
+    var currentFile: URL?
+    var watchRecordingStarted: ((URL) -> Bool)?
     var watchEndRequested: (() -> Void)?
     var watchStopRequested: ((Bool) -> Void)?
     var communicationButtonHandler: ((String) -> Void)?
     var communicationPlaybackHandler: ((Data) -> Void)?
-    func startRecording() { starts += 1; isRecording = !startFails; capturedRecordingDuration = 0 }
+    func startRecording() {
+        starts += 1; capturedRecordingDuration = 0
+        if let directory = captureDirectory {
+            let url = directory.appendingPathComponent("test-\(UUID().uuidString).m4a")
+            try! Data().write(to: url); currentFile = url
+            if watchRecordingStarted?(url) == false { isRecording = false; return }
+        }
+        isRecording = !startFails
+    }
+    func sealWatchSegment() -> (URL, TimeInterval)? {
+        guard let url = currentFile else { return nil }
+        currentFile = nil; isRecording = false
+        guard capturedRecordingDuration > 0 else { return nil }
+        try! Data(repeating: 1, count: Int(capturedRecordingDuration * 16000)).write(to: url)
+        return (url, capturedRecordingDuration)
+    }
     func stopRecording(shouldProcess: Bool = true) {
         if let handler = watchStopRequested { handler(shouldProcess); return }
         isRecording = false; lastVoiceSubmissionQueued = shouldProcess
@@ -175,4 +195,31 @@ final class RunLoop {
     enum Mode { case common }
     static let main = RunLoop()
     func add(_ timer: Timer, forMode: Mode) { timer.schedule() }
+}
+
+struct NWPath { enum Status { case satisfied, unsatisfied }; let status: Status }
+final class NWPathMonitor {
+    var pathUpdateHandler: ((NWPath) -> Void)?
+    func start(queue: DispatchQueue) {}
+}
+final class AVAudioFile {
+    struct Format { let sampleRate: Double = 16000 }
+    let length: Int64
+    let processingFormat = Format()
+    init(forReading url: URL) throws { length = Int64(try Data(contentsOf: url).count) }
+}
+enum MediaSDK {
+    static var forceMergeFailure = false
+    static var mergeBarrier: DispatchSemaphore?
+}
+enum WatchAudioMerge {
+    static func merge(files: [URL], output: URL) throws -> Double {
+        MediaSDK.mergeBarrier?.wait()
+        if MediaSDK.forceMergeFailure { throw TestFailure.rejected }
+        var bytes = Data()
+        for file in files { bytes.append(try Data(contentsOf: file)) }
+        guard bytes.count >= 4800 else { throw TestFailure.rejected }
+        try bytes.write(to: output)
+        return Double(bytes.count) / 16000
+    }
 }

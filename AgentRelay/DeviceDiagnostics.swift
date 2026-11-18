@@ -691,7 +691,10 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let pauseResume = UIButton(type: .system)
         pauseResume.setTitle("暂停 / 继续当前录音", for: .normal)
         pauseResume.addTarget(self, action: #selector(pauseResumeRecording), for: .touchUpInside)
-        let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, comparison] : []) + [help, trialLabel, recordButton] + (BLERecoveryLab.usesASK ? [pauseResume] : []) + [table, logView])
+        let outbox = UIButton(type: .system)
+        outbox.setTitle("待发录音与文件恢复", for: .normal)
+        outbox.addTarget(self, action: #selector(showVoiceRecovery), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, comparison] : []) + [help, trialLabel, recordButton] + (BLERecoveryLab.usesASK ? [pauseResume, outbox] : []) + [table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -892,6 +895,33 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         if WearableService.shared.isRecording { WatchVoiceSession.shared.phonePause() }
         else if WatchVoiceSession.shared.isPausedDraft { WatchVoiceSession.shared.phoneStart() }
         refresh()
+    }
+    @objc private func showVoiceRecovery() {
+        guard #available(iOS 17.4, *) else { return }
+        let watch = WatchVoiceSession.shared
+        let list = UIAlertController(title: "录音待发箱", message: "待发文件会在网络和登录恢复后继续发送。结果未知的文件只核对回执，不自动重发。", preferredStyle: .actionSheet)
+        list.addAction(UIAlertAction(title: "重试待发文件", style: .default) { _ in watch.retryPendingDeliveries() })
+        for item in watch.recoveryItems {
+            let labels = ["pending": "待发送", "sending": "正在发送", "uncertain": "结果未确认", "needsReview": "需要处理", "unverified": "原始尾段待核对"]
+            list.addAction(UIAlertAction(title: "\(labels[item.state] ?? item.state) · \(item.url.lastPathComponent.prefix(30))", style: .default) { [weak self] _ in
+                guard let self = self else { return }
+                let actions = UIAlertController(title: "恢复录音", message: item.url.lastPathComponent, preferredStyle: .actionSheet)
+                if item.canVerify {
+                    actions.addAction(UIAlertAction(title: "核对服务器回执", style: .default) { _ in watch.verifyDeliveryReceipt(item.id) })
+                }
+                actions.addAction(UIAlertAction(title: "导出保留的录音文件", style: .default) { _ in
+                    let share = UIActivityViewController(activityItems: [item.url], applicationActivities: nil)
+                    share.popoverPresentationController?.sourceView = self.view
+                    self.present(share, animated: true)
+                })
+                actions.addAction(UIAlertAction(title: "取消", style: .cancel))
+                actions.popoverPresentationController?.sourceView = self.view
+                self.present(actions, animated: true)
+            })
+        }
+        list.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        list.popoverPresentationController?.sourceView = view
+        present(list, animated: true)
     }
     @objc private func close() {
         WearableService.shared.stopInputComparison()

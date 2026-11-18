@@ -89,5 +89,103 @@ func command(_ sequence: UInt32, seconds: Double = 8) -> BLELabCommand {
         check(results.last == true && service.isRecording, "Failed capture prevented next start")
         voice.endSystemConversationKeepingWatchDraft(); await settle(); finalManager.deactivate(); await settle()
         print("Production LCK lifecycle: offline start, stale action, phone hang-up, audio release, cancel, permission failure, recorder failure recovery passed")
+        await runWatchJournalChecks()
     }
+}
+
+@MainActor func runWatchJournalChecks() async {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("watch-state-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let service = WearableService.shared
+    let voice = VoiceConversationProbe.shared
+    let watch = WatchVoiceSession(storageRoot: root)
+    service.captureDirectory = root.appendingPathComponent("Recordings")
+    service.authCookie = nil
+    let destination: [String:String] = ["hostId":"original", "project":"first"]
+    UserDefaults.standard.set(destination, forKey: "shortcut_recording_destination")
+    func journal() -> [String:Any] {
+        let bytes = try! Data(contentsOf: root.appendingPathComponent("WatchVoice/journal.json"))
+        return try! JSONSerialization.jsonObject(with: bytes) as! [String:Any]
+    }
+    func activate(_ controller: WatchVoiceSession) async -> ConversationManager {
+        await settle(0.4)
+        let manager = ConversationManager.instances.last!
+        manager.activate(); await settle()
+        return manager
+    }
+    func release(_ manager: ConversationManager) async { await settle(0.2); manager.deactivate(); await settle(0.25) }
+
+    // Four controls use one real journal. Phone pause/continue omits the pause
+    // gap, and changing UI destination during recording cannot retarget audio.
+    watch.phoneStart()
+    let first = await activate(watch)
+    service.capturedRecordingDuration = 0.6
+    await settle(0.6)
+    watch.phonePause(); await release(first)
+    check(watch.isPausedDraft, "Phone pause lost draft")
+    UserDefaults.standard.set(["hostId":"changed", "project":"other"], forKey:"shortcut_recording_destination")
+    watch.phoneStart()
+    let second = await activate(watch)
+    service.capturedRecordingDuration = 0.8
+    await settle(0.6)
+    watch.phoneSend(); await release(second); await settle(0.4)
+    var saved = journal()
+    var deliveries = saved["deliveries"] as! [[String:Any]]
+    check(deliveries.count == 1 && !watch.hasDraft, "Segment send did not persist exactly one message")
+    check(abs((deliveries[0]["duration"] as! Double) - 1.4) < 0.001, "Pause gap leaked into merged duration")
+    check((deliveries[0]["destination"] as! [String:String]) == destination, "UI context change retargeted capture")
+    let originalSession = saved["session"] as! String
+    check(deliveries[0]["session"] as! String == originalSession, "Send ended logical conversation")
+
+    watch.phoneEnd(); await settle()
+    check(journal()["session"] == nil, "End with no recording did not close logical context")
+
+    // Early failed/empty recording must not trap every later long press in send.
+    service.startFails = true
+    watch.phoneStart()
+    let failed = await activate(watch)
+    await release(failed)
+    check(!watch.hasDraft && !service.isRecording, "Failed start left phantom draft")
+    service.startFails = false
+    watch.phoneStart()
+    let third = await activate(watch)
+    service.capturedRecordingDuration = 0.5
+    await settle(0.6)
+    check(service.isRecording, "Start after empty failure failed")
+
+    // Unexpected stop saves a paused draft; a controller restart recovers it
+    // without automatically reopening the microphone.
+    service.stopRecording(shouldProcess: false); await release(third)
+    check(watch.isPausedDraft, "External phone stop lost captured segment")
+    let recovered = WatchVoiceSession(storageRoot: root)
+    check(recovered.isPausedDraft && !service.isRecording, "Journal restart auto-recorded or lost draft")
+    recovered.phoneStart()
+    let fourth = await activate(recovered)
+    service.capturedRecordingDuration = 0.5
+    await settle(0.6)
+
+    // User hangs up while a send is still merging. Save finishes once and closes
+    // the logical context; delayed call cleanup cannot interfere with the save.
+    let barrier = DispatchSemaphore(value: 0)
+    MediaSDK.mergeBarrier = barrier
+    recovered.phoneSend(); await settle()
+    voice.end(); await settle()
+    MediaSDK.mergeBarrier = nil; barrier.signal()
+    await release(fourth); await settle(0.5)
+    saved = journal(); deliveries = saved["deliveries"] as! [[String:Any]]
+    check(deliveries.count == 2 && saved["session"] == nil, "Hang-up during merge lost message or retained closed context")
+    check(deliveries[1]["session"] as! String != originalSession, "Explicit end did not create new context next time")
+    check(deliveries.allSatisfy { $0["state"] as? String == "pending" }, "Offline files did not remain pending")
+
+    // A merge error preserves source segments, then succeeds once when retried.
+    recovered.phoneStart()
+    let fifth = await activate(recovered)
+    service.capturedRecordingDuration = 0.7; await settle(0.6)
+    MediaSDK.forceMergeFailure = true
+    recovered.phoneSend(); await release(fifth); await settle(0.3)
+    check(recovered.hasDraft && (journal()["deliveries"] as! [Any]).count == 2, "Merge failure lost or duplicated audio")
+    MediaSDK.forceMergeFailure = false
+    recovered.phoneSend(); await settle(0.5)
+    check(!recovered.hasDraft && (journal()["deliveries"] as! [Any]).count == 3, "Merge retry failed to close durable draft")
+    print("Production watch journal: pause/resume, same/new context, target freeze, failed-start recovery, external stop, restart, hang-up during merge, offline persistence, merge retry passed")
 }

@@ -1,6 +1,11 @@
+#if !RELAY_HEADLESS_TEST
 import UIKit
 import AVFoundation
 import Network
+#else
+import Foundation
+import FoundationNetworking
+#endif
 
 @available(iOS 17.4, *)
 final class WatchVoiceSession {
@@ -25,6 +30,9 @@ final class WatchVoiceSession {
         var session: String?
         var draft: Draft?
         var conversations: [String: String] = [:]
+        // Optional for compatibility with journals written by earlier builds.
+        var sessionDestinations: [String: [String: String]]?
+        var sessionEndpoints: [String: String]?
         var deliveries: [Delivery] = []
         var unverifiedFiles: [String] = []
     }
@@ -34,8 +42,11 @@ final class WatchVoiceSession {
     private var storageReady = true
     private var starting = false
     private var finalizing = false
+    private var endAfterFinalizing = false
     private var uploading = false
     private var uploadTask: UIBackgroundTaskIdentifier = .invalid
+    private var retryWork: DispatchWorkItem?
+    private var retryAttempt = 0
     private var epoch = UInt32.random(in: 1...UInt32.max)
     private var revision: UInt16 = 1
     private var fingerprint = ""
@@ -63,10 +74,12 @@ final class WatchVoiceSession {
         return "手表：\(name) · \(conversation)\n待发 \(journal.deliveries.count) · 需处理 \(uncertain)" + (lastError.map { "\n" + $0 } ?? "")
     }
 
-    private init() {
+    // The normal singleton uses app directories. An isolated root permits
+    // restart/failure tests to run this same controller without phone storage.
+    init(storageRoot: URL? = nil) {
         let fm = FileManager.default
-        directory = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WatchVoice")
-        recordings = fm.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Recordings")
+        directory = (storageRoot ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]).appendingPathComponent("WatchVoice")
+        recordings = (storageRoot ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]).appendingPathComponent("Recordings")
         recoverStorage()
         if journal.draft != nil { attachRecorder() }
         monitor.pathUpdateHandler = { [weak self] path in
@@ -74,6 +87,7 @@ final class WatchVoiceSession {
         }
         monitor.start(queue: DispatchQueue(label: "relay.watch.network"))
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.flushDeliveries() }
+        NotificationCenter.default.addObserver(forName: Notification.Name("RelayAuthenticationChanged"), object: nil, queue: .main) { [weak self] _ in self?.flushDeliveries() }
         NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self, !self.storageReady, !self.starting, !self.finalizing,
                   !WearableService.shared.isRecording else { return }
@@ -88,8 +102,12 @@ final class WatchVoiceSession {
         storageReady = true
         do {
             for path in [directory, recordings] {
+                #if RELAY_HEADLESS_TEST
+                try fm.createDirectory(at: path, withIntermediateDirectories: true)
+                #else
                 try fm.createDirectory(at: path, withIntermediateDirectories: true,
                     attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+                #endif
             }
             let file = directory.appendingPathComponent("journal.json")
             if fm.fileExists(atPath: file.path) { journal = try JSONDecoder().decode(Journal.self, from: Data(contentsOf: file)) }
@@ -115,7 +133,9 @@ final class WatchVoiceSession {
         guard storageReady else { throw WatchFailure.storage }
         let path = directory.appendingPathComponent("journal.json")
         try JSONEncoder().encode(journal).write(to: path, options: .atomic)
+        #if !RELAY_HEADLESS_TEST
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path.path)
+        #endif
     }
     private func log(_ text: String) { DeviceDiagnostics.shared.log("WATCH " + text) }
 
@@ -279,6 +299,15 @@ final class WatchVoiceSession {
         let before = journal
         do {
             if journal.session == nil { journal.session = UUID().uuidString }
+            let session = journal.session!
+            if journal.sessionDestinations?[session] == nil {
+                var destination = UserDefaults.standard.dictionary(forKey: "shortcut_recording_destination") as? [String: String] ?? [:]
+                destination.removeValue(forKey: "conversationId")
+                if journal.sessionDestinations == nil { journal.sessionDestinations = [:] }
+                if journal.sessionEndpoints == nil { journal.sessionEndpoints = [:] }
+                journal.sessionDestinations?[session] = destination
+                journal.sessionEndpoints?[session] = WearableService.shared.gatewayBaseURL
+            }
             if journal.draft == nil { journal.draft = Draft(session: journal.session!) }
             try save()
         } catch { journal = before; lastError = error.localizedDescription; finish(request, succeeded: false, error: 8); return }
@@ -329,7 +358,12 @@ final class WatchVoiceSession {
     }
 
     private func finalize(ending: Bool, completion: @escaping (Bool) -> Void) {
-        guard !finalizing else { completion(false); return }
+        guard !finalizing else {
+            // A phone hang-up during AAC merge must still close the logical
+            // context once that already-running save succeeds.
+            if ending { endAfterFinalizing = true }
+            completion(false); return
+        }
         guard let draft = journal.draft else {
             let before = journal
             if ending { journal.session = nil }
@@ -351,8 +385,9 @@ final class WatchVoiceSession {
         let messageID = UUID().uuidString
         let output = recordings.appendingPathComponent("watch_message_\(messageID).m4a")
         let files = saved.segments.map { recordings.appendingPathComponent($0) }
-        let endpoint = WearableService.shared.gatewayBaseURL
-        var destination = UserDefaults.standard.dictionary(forKey: "shortcut_recording_destination") as? [String: String] ?? [:]
+        let endpoint = journal.sessionEndpoints?[saved.session] ?? WearableService.shared.gatewayBaseURL
+        var destination = journal.sessionDestinations?[saved.session]
+            ?? (UserDefaults.standard.dictionary(forKey: "shortcut_recording_destination") as? [String: String] ?? [:])
         destination.removeValue(forKey: "conversationId")
         var task: UIBackgroundTaskIdentifier = .invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "Finalize watch voice") {
@@ -370,13 +405,20 @@ final class WatchVoiceSession {
                     self.journal.deliveries.append(Delivery(id: messageID, session: saved.session, file: output.lastPathComponent,
                         duration: duration, endpoint: endpoint, destination: destination))
                     self.journal.draft = nil
-                    if ending { self.journal.session = nil }
+                    if ending || self.endAfterFinalizing { self.journal.session = nil }
                     do { try self.save() } catch { self.journal = before; throw error }
                     self.detachRecorder()
+                    self.endAfterFinalizing = false
                     self.log("单条录音已持久保存 duration=\(duration)；等待服务器确认")
                     completion(true)
                     self.flushDeliveries()
-                } catch { self.lastError = error.localizedDescription; self.log("合并失败，原始段已保留：\(error)"); completion(false) }
+                } catch {
+                    self.endAfterFinalizing = false
+                    self.lastError = error.localizedDescription
+                    self.log("合并失败，原始段已保留，结束操作尚未完成：\(error)")
+                    completion(false)
+                    self.drainPhoneEnd()
+                }
             }
         }
     }
@@ -392,6 +434,15 @@ final class WatchVoiceSession {
     private func finishUploadExecution() {
         uploading = false
         if uploadTask != .invalid { UIApplication.shared.endBackgroundTask(uploadTask); uploadTask = .invalid }
+        retryWork?.cancel()
+        if !journal.deliveries.isEmpty {
+            let delays: [Double] = [2, 5, 10, 20, 40, 60]
+            let delay = delays[min(retryAttempt, delays.count - 1)]
+            retryAttempt += 1
+            let work = DispatchWorkItem { [weak self] in self?.retryWork = nil; self?.flushDeliveries() }
+            retryWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
     }
     private var nextDelivery: Delivery? {
         guard let index = WatchDeliveryOrder.nextIndex(journal.deliveries.map { (session: $0.session, state: $0.state) }) else { return nil }
@@ -406,7 +457,10 @@ final class WatchVoiceSession {
         }
         guard
               let cookie = WearableService.shared.authCookie, !cookie.isEmpty,
-              let probeURL = URL(string: delivery.endpoint + "/api/bootstrap") else { return }
+              let probeURL = URL(string: delivery.endpoint + "/api/bootstrap") else {
+            lastError = "录音已保存在待发箱，登录后自动继续发送"; return
+        }
+        retryWork?.cancel(); retryWork = nil
         uploading = true
         uploadTask = UIApplication.shared.beginBackgroundTask(withName: "Deliver saved watch voice") { [weak self] in
             guard let self = self else { return }
@@ -470,9 +524,10 @@ final class WatchVoiceSession {
                        let message = json?["messageId"] as? String, !message.isEmpty {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries.remove(at: index)
+                        self.retryAttempt = 0
                         self.lastError = nil
                         self.log("服务器已接收 messageId=\(message) conversationId=\(conversation)")
-                    } else if status == 409, let conversation = json?["conversationId"] as? String {
+                    } else if status == 409, json?["error"] as? String == "host_project_offline", let conversation = json?["conversationId"] as? String {
                         self.journal.conversations[delivery.session] = conversation
                         self.journal.deliveries[index].state = "pending"
                         self.lastError = "录音已保存；Agent 暂时离线"
@@ -495,4 +550,49 @@ final class WatchVoiceSession {
         } catch { finishUploadExecution(); storageReady = false; lastError = error.localizedDescription; log("发送准备失败，文件保留：\(error)") }
     }
     private enum WatchFailure: Error { case storage, audio }
+
+    struct RecoveryItem {
+        let id: String
+        let state: String
+        let url: URL
+        let canVerify: Bool
+    }
+    var recoveryItems: [RecoveryItem] {
+        var items = journal.deliveries.map {
+            RecoveryItem(id: $0.id, state: $0.state, url: recordings.appendingPathComponent($0.file), canVerify: true)
+        }
+        items += journal.unverifiedFiles.map {
+            RecoveryItem(id: $0, state: "unverified", url: recordings.appendingPathComponent($0), canVerify: false)
+        }
+        return items
+    }
+    func retryPendingDeliveries() { retryAttempt = 0; flushDeliveries() }
+    func verifyDeliveryReceipt(_ id: String) {
+        guard let delivery = journal.deliveries.first(where: { $0.id == id }),
+              let cookie = WearableService.shared.authCookie, !cookie.isEmpty,
+              let url = URL(string: delivery.endpoint + "/api/wearable/voice-receipts/" + id) else {
+            lastError = "请先登录，再核对服务端回执"; return
+        }
+        var request = URLRequest(url: url); request.timeoutInterval = 10
+        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        request.setValue(delivery.endpoint, forHTTPHeaderField: "Origin")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let receipt = json?["receipt"] as? [String: Any]
+                guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
+                      json?["state"] as? String == "complete", json?["requestId"] as? String == id,
+                      receipt?["requestId"] as? String == id,
+                      let conversation = receipt?["conversationId"] as? String,
+                      let index = self.journal.deliveries.firstIndex(where: { $0.id == id && $0.state != "sending" }) else {
+                    self.lastError = "尚无确定接收回执；原文件保留，可导出核对，不重复发送"
+                    self.log(self.lastError!); return
+                }
+                self.journal.conversations[delivery.session] = conversation
+                self.journal.deliveries.remove(at: index)
+                do { try self.save(); self.lastError = nil; self.log("已核对服务器回执 requestId=\(id)"); self.flushDeliveries() }
+                catch { self.storageReady = false; self.lastError = error.localizedDescription }
+            }
+        }.resume()
+    }
 }
