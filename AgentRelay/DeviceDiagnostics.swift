@@ -9,6 +9,66 @@ final class DeviceDiagnostics {
     private let key = "device_diagnostics_v1"
     private(set) var lines: [String]
     var onChange: (() -> Void)?
+    private var uploadEndpoint: String?
+    private var uploadCookie: String?
+    private var uploadTimer: Timer?
+    private var uploading = false
+    private var generation = 0
+    private var uploadedGeneration = -1
+    private var retryAfter = Date.distantPast
+    private let runID = UUID().uuidString
+    private var scheduledUpload: DispatchWorkItem?
+
+    func configureUpload(endpoint: String, cookie: String?) {
+        guard URL(string: endpoint)?.scheme == "https" else { return }
+        if uploadEndpoint != endpoint || uploadCookie != cookie { uploadedGeneration = -1 }
+        uploadEndpoint = endpoint
+        uploadCookie = cookie
+        if uploadTimer == nil {
+            uploadTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.flushUpload() }
+        }
+        // Never initialize recording services from inside the logger.
+        DispatchQueue.main.async { [weak self] in self?.flushUpload() }
+    }
+
+    private func flushUpload() {
+        guard !uploading, generation != uploadedGeneration, Date() >= retryAfter,
+              let endpoint = uploadEndpoint, let cookie = uploadCookie, !cookie.isEmpty,
+              let url = URL(string: endpoint + "/api/client-diagnostics") else { return }
+        let sentGeneration = generation
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let now = ISO8601DateFormatter().string(from: Date())
+        let entries: [[String: Any]] = lines.suffix(250).map { line in
+            let clean = line.replacingOccurrences(of: "(?i)(bearer\\s+|(?:cookie|token|password|authorization)[=:]\\s*)[^\\s]+", with: "$1[redacted]", options: .regularExpression)
+            return ["at": String(line.prefix(20)), "uptimeMs": 0, "type": "ios.native", "data": ["message": String(clean.prefix(1000))]]
+        }
+        let payload: [String: Any] = ["schemaVersion": 1, "generatedAt": now,
+            "buildVersion": "\(version) (\(build))", "environment": ["platform": "iOS", "os": UIDevice.current.systemVersion],
+            "runtime": ["runId": runID, "state": UIApplication.shared.applicationState.rawValue], "entries": entries]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"; request.timeoutInterval = 10; request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        request.setValue(endpoint, forHTTPHeaderField: "Origin")
+        uploading = true
+        var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Upload device diagnostics") {
+            if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
+        }
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+            DispatchQueue.main.async {
+                if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
+                guard let self = self else { return }
+                self.uploading = false
+                if error == nil, let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                   self.uploadEndpoint == endpoint, self.uploadCookie == cookie {
+                    self.uploadedGeneration = sentGeneration
+                } else { self.retryAfter = Date().addingTimeInterval(30) }
+            }
+        }.resume()
+    }
 
     private init() {
         lines = UserDefaults.standard.stringArray(forKey: key) ?? []
@@ -22,8 +82,17 @@ final class DeviceDiagnostics {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)"
         print("[DeviceDiagnostics] \(line)")
         lines.append(line)
+        generation += 1
         if lines.count > 250 { lines.removeFirst(lines.count - 250) }
         UserDefaults.standard.set(lines, forKey: key)
+        if scheduledUpload == nil {
+            let work = DispatchWorkItem { [weak self] in
+                self?.scheduledUpload = nil
+                self?.flushUpload()
+            }
+            scheduledUpload = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        }
         onChange?()
     }
 
@@ -44,6 +113,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var lastRefreshAt: TimeInterval = 0
     private var selected: CBPeripheral?
     private var notificationsReady = false
+    private var authenticatedIdentity = false
     private var connectionRetry: DispatchWorkItem?
     private var connectionFailures = 0
     private var manuallyDisconnected = false
@@ -106,7 +176,8 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
     var connectionDescription: String {
         guard let peripheral = selected else { return "尚未连接设备" }
-        return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")"
+        let authentication = BLERecoveryLab.enabled ? " · 加密认证\(authenticatedIdentity ? "已就绪" : "未就绪")" : ""
+        return "\(peripheral.name ?? "未命名") · \(peripheral.state == .connected ? "已连接" : "未连接") · 通知\(notificationsReady ? "已就绪" : "未就绪")" + authentication
     }
 
     private override init() {
@@ -308,6 +379,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private func handleDisconnection(_ central: CBCentralManager, peripheral: CBPeripheral, error: Error?, systemReconnecting: Bool) {
         guard peripheral.identifier == selected?.identifier else { return }
+        authenticatedIdentity = false
         notificationsReady = false
         eventCharacteristic = nil
         ackCharacteristic = nil
@@ -411,6 +483,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard !BLERecoveryLab.enabled || peripheral.identifier == selected?.identifier else { return }
+        authenticatedIdentity = false
         connectionRetry?.cancel()
         connectionFailures = 0
         DeviceDiagnostics.shared.log("BLE 已连接 \(peripheral.name ?? "未命名")")
@@ -480,6 +553,19 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 peripheral.setNotifyValue(true, for: characteristic)
             }
             if characteristic.properties.contains(.read) { peripheral.readValue(for: characteristic) }
+            if BLERecoveryLab.enabled, characteristic.uuid == CBUUID(string: BLERecoveryLab.identity) {
+                // A subscribed link can still be unencrypted. Retry a protected
+                // read after restoration rather than treating subscription as readiness.
+                for delay in [1.0, 3.0, 8.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak peripheral] in
+                        guard let self = self, let peripheral = peripheral,
+                              self.selected === peripheral, peripheral.state == .connected,
+                              !self.authenticatedIdentity else { return }
+                        DeviceDiagnostics.shared.log("BLE 加密认证尚未完成；重试受保护身份读取 delay=\(delay)")
+                        peripheral.readValue(for: characteristic)
+                    }
+                }
+            }
         }
     }
 
@@ -498,6 +584,10 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard peripheral.identifier == selected?.identifier else { return }
         let service = characteristic.service?.uuid.uuidString ?? "?"
         let data = characteristic.value ?? Data()
+        if BLERecoveryLab.enabled, characteristic.uuid == CBUUID(string: BLERecoveryLab.identity) {
+            authenticatedIdentity = error == nil && data.count == 16
+            DeviceDiagnostics.shared.log("BLE 加密身份验证 ready=\(authenticatedIdentity) bytes=\(data.count) error=\(String(describing: error))")
+        }
         if characteristic.service?.uuid == buttonService, characteristic.uuid == buttonEvent {
             if BLERecoveryLab.enabled {
                 if error == nil { receiveLabCommand(data, from: peripheral) }

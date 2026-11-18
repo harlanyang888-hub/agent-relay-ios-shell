@@ -17,6 +17,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         WearableService.shared.delegate = self
         setupWebView()
         webView.configuration.websiteDataStore.httpCookieStore.add(self)
+        syncCookiesToWearable()
         setupIndicator()
         loadInitialURL()
         let deviceTestButton = UIButton(type: .system)
@@ -242,6 +243,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
             }
             let cookieHeaders = relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
             WearableService.shared.authCookie = cookieHeaders.isEmpty ? nil : cookieHeaders
+            DeviceDiagnostics.shared.configureUpload(endpoint: self.targetURLString, cookie: cookieHeaders.isEmpty ? nil : cookieHeaders)
         }
     }
 
