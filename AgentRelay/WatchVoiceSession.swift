@@ -238,6 +238,7 @@ final class WatchVoiceSession {
             self.log(detail)
             if !ok {
                 _ = self.pauseDraft()
+                VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
                 if self.journal.draft?.segments.isEmpty == true {
                     if let file = self.journal.draft?.current { self.journal.unverifiedFiles.append(file) }
                     self.journal.draft = nil
