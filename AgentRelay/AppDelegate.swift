@@ -83,6 +83,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         pendingRecordingAction = nil
         let context = pendingRecordingContext
         pendingRecordingContext = [:]
+        if #available(iOS 17.4, *), BLERecoveryLab.usesASK {
+            if action == "/start" {
+                if !context.isEmpty { UserDefaults.standard.set(context, forKey: "shortcut_recording_destination") }
+                WatchVoiceSession.shared.phoneStart()
+            } else if action == "/stop" { WatchVoiceSession.shared.phoneSend() }
+            else { WatchVoiceSession.shared.phonePause() }
+            return
+        }
         if action == "/start" {
             WearableService.shared.startShortcutRecording(context: context)
         } else {

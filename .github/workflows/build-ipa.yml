@@ -14,6 +14,8 @@ jobs:
       - run: |
           swiftc AgentRelay/WatchWire.swift tests/watch/main.swift -o /tmp/watch-wire-checks
           /tmp/watch-wire-checks
+          swiftc -parse-as-library -D RELAY_HEADLESS_TEST AgentRelay/WatchWire.swift AgentRelay/BLELabCommand.swift tests/voice-lifecycle/SDKStubs.swift AgentRelay/VoiceConversationProbe.swift tests/voice-lifecycle/main.swift -o /tmp/voice-lifecycle-checks
+          /tmp/voice-lifecycle-checks
           swiftc -frontend -parse AgentRelay/AppDelegate.swift AgentRelay/WatchVoiceSession.swift AgentRelay/WatchAudioMerge.swift AgentRelay/SystemAudioCapture.swift AgentRelay/WearableService.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift
   build:
     needs: protocol

@@ -1,0 +1,16 @@
+name: Check recording state recovery
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/watch-ask-v3]
+    paths: ['AgentRelay/VoiceConversationProbe.swift', 'AgentRelay/WatchVoiceSession.swift', 'AgentRelay/WatchWire.swift', 'tests/voice-lifecycle/**', '.github/workflows/check-voice-state.yml']
+jobs:
+  lifecycle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run production controller against simulated system callbacks
+        run: |
+          swiftc -parse-as-library -D RELAY_HEADLESS_TEST AgentRelay/WatchWire.swift AgentRelay/BLELabCommand.swift tests/voice-lifecycle/SDKStubs.swift AgentRelay/VoiceConversationProbe.swift tests/voice-lifecycle/main.swift -o /tmp/voice-lifecycle-checks
+          /tmp/voice-lifecycle-checks
+          swiftc -frontend -parse AgentRelay/WatchVoiceSession.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/DeviceDiagnostics.swift AgentRelay/AppDelegate.swift AgentRelay/WebViewController.swift

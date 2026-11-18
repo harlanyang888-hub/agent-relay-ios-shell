@@ -41,9 +41,14 @@ final class WatchVoiceSession {
     private var fingerprint = ""
     private let receipts = WatchReceipts()
     private var pending: WatchRequest?
+    private var phoneBoot = UInt32.random(in: 1...UInt32.max)
+    private var phoneSequence: UInt16 = 0
+    private var phoneEndPending = false
     private let monitor = NWPathMonitor()
     var send: ((Data) -> Void)?
     private(set) var lastError: String?
+    var hasDraft: Bool { journal.draft != nil }
+    var isPausedDraft: Bool { journal.draft != nil && !WearableService.shared.isRecording && !starting && !finalizing }
     var summary: String {
         let uncertain = journal.deliveries.filter { ["uncertain", "needsReview"].contains($0.state) }.count
         let name: String
@@ -113,6 +118,44 @@ final class WatchVoiceSession {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path.path)
     }
     private func log(_ text: String) { DeviceDiagnostics.shared.log("WATCH " + text) }
+
+    // All phone entry points use the same journal, command gate and outcomes as
+    // the watch. A phone stop can no longer bypass the watch's draft/context.
+    func phoneStart() {
+        guard !WearableService.shared.isRecording, !starting, !finalizing else { return }
+        phoneAction(journal.draft == nil ? .bootLong : .bootShort)
+    }
+    func phoneSend() {
+        if starting { VoiceConversationProbe.shared.cancelPendingStart() }
+        phoneAction(.bootLong, sendingOnly: true)
+    }
+    func phoneEnd() {
+        phoneEndPending = true
+        if starting { VoiceConversationProbe.shared.cancelPendingStart() }
+        drainPhoneEnd()
+    }
+    private func drainPhoneEnd() {
+        guard phoneEndPending, pending == nil, !starting, !finalizing else { return }
+        phoneEndPending = false
+        phoneAction(.end)
+    }
+    func phonePause() {
+        guard WearableService.shared.isRecording else { return }
+        phoneAction(.bootShort)
+    }
+    func phoneToggle() { phoneAction(.bootLong) }
+    private func phoneAction(_ action: WatchRequest.Action, sendingOnly: Bool = false) {
+        if sendingOnly, journal.draft == nil { return }
+        guard pending == nil, !starting, !finalizing else { log("手机操作等待当前动作完成"); return }
+        updateRevision()
+        if phoneSequence == .max { phoneBoot = UInt32.random(in: 1...UInt32.max); phoneSequence = 0 }
+        phoneSequence += 1
+        var packet = Data([65, 82, 3, action.rawValue])
+        packet.watchAppend(phoneBoot); packet.watchAppend(phoneSequence)
+        packet.watchAppend(epoch); packet.watchAppend(revision)
+        packet.watchAppend(UInt32(clamping: Int64(Date().timeIntervalSince1970)) + 8)
+        receive(packet)
+    }
     private var capture: WatchReply.Capture {
         if finalizing { return .finalizing }
         if starting { return .starting }
@@ -120,7 +163,9 @@ final class WatchVoiceSession {
         return journal.draft == nil ? .idle : .paused
     }
     private func updateRevision() {
-        let value = "\(capture.rawValue):\(journal.draft?.id ?? ""):\(journal.session ?? ""):\(VoiceConversationProbe.shared.callUUID?.uuidString ?? ""):\(journal.deliveries.count)"
+        // Upload progress isn't a recording-state transition. It must not make
+        // a fresh physical gesture stale between snapshot and command.
+        let value = "\(capture.rawValue):\(journal.draft?.id ?? ""):\(journal.session ?? "")"
         if value != fingerprint {
             fingerprint = value
             if revision == .max { epoch = UInt32.random(in: 1...UInt32.max); revision = 1 }
@@ -128,6 +173,8 @@ final class WatchVoiceSession {
         }
     }
     private func reply(_ request: WatchRequest, _ result: WatchReply.Result, error: UInt8 = 0) {
+        // Phone-generated sequences have no corresponding pending watch packet.
+        guard request.packet.watchUInt32(4) != phoneBoot else { return }
         updateRevision()
         var packet = WatchReply(result: result, sequence: request.sequence, epoch: epoch, revision: revision, capture: capture)
         if journal.session != nil { packet.flags |= 1 }
@@ -140,11 +187,13 @@ final class WatchVoiceSession {
         starting = false
         receipts.record(request, succeeded: succeeded, error: error)
         reply(request, succeeded ? .applied : .rejected, error: error)
+        drainPhoneEnd()
     }
 
     func receive(_ data: Data) {
         guard let request = WatchRequest(data) else { log("拒绝无效 v3 数据包"); return }
         if request.action == .sync { reply(request, .snapshot); flushDeliveries(); return }
+        log("收到动作 action=\(request.action.rawValue) id=\(request.key) capture=\(capture.rawValue)")
         if let result = receipts.result(for: request) {
             reply(request, result.0 ? .applied : .rejected, error: result.1); return
         }
@@ -160,7 +209,10 @@ final class WatchVoiceSession {
         updateRevision()
         guard storageReady, request.isFresh(),
               request.epoch == epoch, request.revision == revision,
-              !starting, !finalizing else { finish(request, succeeded: false, error: storageReady ? 3 : 8); return }
+              !starting, !finalizing else {
+            log("动作拒绝：storage=\(storageReady) fresh=\(request.isFresh()) epoch=\(request.epoch == epoch) revision=\(request.revision)/\(revision)")
+            finish(request, succeeded: false, error: storageReady ? 3 : 8); return
+        }
         pending = request
         reply(request, .received)
         switch request.action {
@@ -243,7 +295,7 @@ final class WatchVoiceSession {
             if !ok {
                 _ = self.pauseDraft()
                 VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
-                if self.journal.draft?.segments.isEmpty == true {
+                if self.journal.draft == nil || self.journal.draft?.segments.isEmpty == true {
                     if let file = self.journal.draft?.current { self.journal.unverifiedFiles.append(file) }
                     self.journal.draft = nil
                     do { try self.save(); self.detachRecorder() }
@@ -255,14 +307,23 @@ final class WatchVoiceSession {
     }
     @discardableResult private func pauseDraft() -> Bool {
         guard journal.draft != nil else { return false }
-        let wasRecording = WearableService.shared.isRecording
+        let current = journal.draft?.current
         if let (url, _) = WearableService.shared.sealWatchSegment() {
             if journal.draft?.segments.contains(url.lastPathComponent) == false { journal.draft?.segments.append(url.lastPathComponent) }
             journal.draft?.current = nil
-        } else if wasRecording {
-            lastError = "采音已停止，当前段校验失败，原文件保留"
-            return false
+        } else if let current = current {
+            let url = recordings.appendingPathComponent(current)
+            if let file = try? AVAudioFile(forReading: url), file.length > 0 {
+                if journal.draft?.segments.contains(current) == false { journal.draft?.segments.append(current) }
+            } else {
+                if !journal.unverifiedFiles.contains(current) { journal.unverifiedFiles.append(current) }
+                lastError = "当前段未通过校验，原文件保留；下一次可重新开始"
+            }
+            journal.draft?.current = nil
         }
+        // An empty failed start isn't a paused message. Keeping it here would
+        // make every later BOOT long press attempt to send an empty draft.
+        if journal.draft?.segments.isEmpty == true { journal.draft = nil }
         do { try save(); log("已暂停；有效段数=\(journal.draft?.segments.count ?? 0)"); return true }
         catch { lastError = error.localizedDescription; return false }
     }
@@ -276,7 +337,15 @@ final class WatchVoiceSession {
             catch { journal = before; lastError = error.localizedDescription; completion(false) }
             return
         }
-        guard pauseDraft(), let saved = journal.draft, !saved.segments.isEmpty else { completion(false); return }
+        guard pauseDraft() else { completion(false); return }
+        guard let saved = journal.draft, !saved.segments.isEmpty else {
+            if ending {
+                journal.session = nil
+                do { try save(); detachRecorder(); completion(true) }
+                catch { lastError = error.localizedDescription; completion(false) }
+            } else { completion(false) }
+            return
+        }
         finalizing = true
         VoiceConversationProbe.shared.pauseAndSend()
         let messageID = UUID().uuidString

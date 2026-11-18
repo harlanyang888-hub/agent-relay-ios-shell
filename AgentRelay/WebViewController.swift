@@ -201,9 +201,15 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         case "stopListening":
             WearableService.shared.stopListening()
         case "startRecording":
-            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.handleDedicatedButton() }
+            if #available(iOS 17.4, *) {
+                if BLERecoveryLab.usesASK { WatchVoiceSession.shared.phoneStart() }
+                else { VoiceConversationProbe.shared.handleDedicatedButton() }
+            }
         case "stopRecording":
-            if #available(iOS 17.4, *) { VoiceConversationProbe.shared.pauseAndSend() }
+            if #available(iOS 17.4, *) {
+                if BLERecoveryLab.usesASK { WatchVoiceSession.shared.phoneSend() }
+                else { VoiceConversationProbe.shared.pauseAndSend() }
+            }
         case "playAudio":
             let url = body["url"] as? String
             let base64 = body["base64"] as? String

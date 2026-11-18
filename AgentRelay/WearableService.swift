@@ -972,7 +972,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         audioRecorder = nil
         isRecording = false
         recordingStartTime = nil
-        if let fileURL = tempAudioFileURL {
+        if watchRecordingStarted == nil, let fileURL = tempAudioFileURL {
             try? FileManager.default.removeItem(at: fileURL)
         }
         tempAudioFileURL = nil
@@ -1531,7 +1531,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         lastCapturedTime = 0
         lastCaptureProgressAt = ProcessInfo.processInfo.systemUptime
         var confirmed = false
-        recordingHealthTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self, self.isRecording, let recorder = self.audioRecorder else { return }
             let now = ProcessInfo.processInfo.systemUptime
             let captured = recorder.currentTime
@@ -1551,6 +1551,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 self.failActiveRecording(message: "麦克风采集中断，未发送，请重新录音")
             }
         }
+        recordingHealthTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func failActiveRecording(message: String) {

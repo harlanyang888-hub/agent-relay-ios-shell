@@ -1,7 +1,12 @@
+#if !RELAY_HEADLESS_TEST
 import UIKit
 import AVFoundation
 import LiveCommunicationKit
 import CoreBluetooth
+#else
+import Foundation
+import FoundationNetworking
+#endif
 
 // 独立实机验证入口，只从现有“设备测试”页面进入。
 // 服务端仍为用户自己的 Agent Relay；不注册虚构电话或自动来电。
@@ -29,7 +34,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private var labDeadline: DispatchWorkItem?
     private var managerReady = false
     private var preservesWatchDraftOnEnd = false
-    var canChangeLaunchPath: Bool { callUUID == nil && !opening && !WearableService.shared.isRecording }
+    private var ending = false
+    private var deferredConnect: DispatchWorkItem?
+    private var waitingForSystem = false
+    private var renewManagerBeforeNextCall = false
+    var canChangeLaunchPath: Bool { callUUID == nil && !opening && !ending && audioReleaseConfirmed && !WearableService.shared.isRecording }
 
     private func traceLaunch(_ stage: String, since start: TimeInterval) {
         let app = UIApplication.shared
@@ -58,7 +67,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             guard let self = self, self.labCompletion != nil else { return }
             self.wantsRecording = false
             self.finishLabCommand(false, "录音启动未获确认，未将收到当作执行成功")
-            if self.callUUID != nil { self.setPaused(true) }
+            if self.callUUID != nil && !self.ending { self.setPaused(true) }
         }
         labDeadline = deadline
         DispatchQueue.main.asyncAfter(deadline: .now() + min(28, max(0, command.expires - Date().timeIntervalSince1970)), execute: deadline)
@@ -69,6 +78,9 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func finishLabCommand(_ success: Bool, _ message: String) {
+        deferredConnect?.cancel()
+        deferredConnect = nil
+        waitingForSystem = false
         labDeadline?.cancel()
         labDeadline = nil
         let completion = labCompletion
@@ -100,6 +112,27 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
 
     func connect() {
         guard !opening, callUUID == nil else { return }
+        // Never start a new call while the previous call still owns audio.
+        // Rotating the manager after release also fences delayed old audio callbacks.
+        if audioReleaseConfirmed, !ending, renewManagerBeforeNextCall {
+            renewManagerBeforeNextCall = false
+            manager.invalidate()
+            configureManager()
+        }
+        if !audioReleaseConfirmed || ending || !managerReady {
+            if !waitingForSystem { log("等待上一轮音频释放或系统会话就绪"); waitingForSystem = true }
+            let attempt = generation
+            deferredConnect?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, self.generation == attempt else { return }
+                self.deferredConnect = nil
+                self.connect()
+            }
+            deferredConnect = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+            return
+        }
+        waitingForSystem = false
         let service = WearableService.shared
         guard !service.inputComparisonActive else {
             log("请先结束五秒麦克风对照")
@@ -111,18 +144,24 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         guard audio.recordPermission == .granted else {
             guard UIApplication.shared.applicationState == .active else {
                 log("请先打开 App 授予麦克风权限，再使用硬件按钮")
+                finishLabCommand(false, "麦克风权限未授权，需要前台授权")
                 return
             }
+            let attempt = generation
             audio.requestRecordPermission { granted in
                 DispatchQueue.main.async {
+                    guard self.generation == attempt,
+                          self.labCommand?.expired != true else { return }
                     if granted { self.connect() }
-                    else { self.log("需要麦克风权限") }
+                    else { self.log("需要麦克风权限"); self.finishLabCommand(false, "麦克风权限被拒绝") }
                 }
             }
             return
         }
-        guard let cookie = service.authCookie, !cookie.isEmpty else {
+        let cookie = service.authCookie ?? ""
+        guard BLERecoveryLab.usesASK || !cookie.isEmpty else {
             log("请先在 Agent Relay 中登录，再进入测试")
+            finishLabCommand(false, "未登录；当前旧版录音路径需要登录")
             return
         }
         service.stopListening()
@@ -145,7 +184,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         traceLaunch("button", since: launchStartedAt)
         Task { @MainActor in
             do {
-                if !BLERecoveryLab.immediateSystemStart {
+                if !BLERecoveryLab.usesASK && !BLERecoveryLab.immediateSystemStart {
                 // 保留成功基线的鉴权预检，使用只读接口，不提前创建空会话。
                 guard let url = URL(string: "\(service.gatewayBaseURL)/api/bootstrap") else {
                     throw ProbeError.invalidEndpoint
@@ -297,13 +336,22 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func end() {
+        guard !ending else { return }
         submitRecordingBeforeEnding()
         generation = UUID()
         cancelScheduledResume()
-        guard let uuid = callUUID else { opening = false; return }
+        guard let uuid = callUUID else {
+            opening = false
+            finishLabCommand(false, "启动已取消")
+            return
+        }
+        ending = true
+        let attempt = generation
+        let callManager = manager!
         Task { @MainActor in
-            do { try await manager.perform([EndConversationAction(conversationUUID: uuid)]) }
+            do { try await callManager.perform([EndConversationAction(conversationUUID: uuid)]) }
             catch {
+                guard self.manager === callManager, self.generation == attempt, self.callUUID == uuid else { return }
                 self.log("结束请求失败：\(error.localizedDescription)")
                 self.manager.invalidate()
                 self.cleanup()
@@ -316,6 +364,17 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         guard callUUID != nil else { return }
         preservesWatchDraftOnEnd = true
         end()
+    }
+
+    func cancelPendingStart() {
+        wantsRecording = false
+        finishLabCommand(false, "用户取消启动；有效录音段保留")
+        if callUUID != nil { endSystemConversationKeepingWatchDraft() }
+        else {
+            generation = UUID()
+            opening = false
+            finishBackgroundTask()
+        }
     }
 
     private func submitRecordingBeforeEnding() {
@@ -351,12 +410,16 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         WearableService.shared.refreshCommunicationMediaState(active: true)
         recordingWasConfirmed = false
         confirmedTimer?.invalidate()
-        confirmedTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+        let call = callUUID
+        let attempt = generation
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self = self else { timer.invalidate(); return }
+            guard self.callUUID == call, self.generation == attempt else { timer.invalidate(); return }
             let service = WearableService.shared
             if !service.isRecording {
                 timer.invalidate()
                 self.log("采音已停止；详情见录音诊断")
+                self.finishLabCommand(false, "采音未确认即停止，草稿保留")
                 if self.audioActive { self.setPaused(true) }
             } else if !self.recordingWasConfirmed && service.capturedRecordingDuration >= 1 {
                 self.recordingWasConfirmed = true
@@ -364,6 +427,8 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 self.finishLabCommand(true, "采音时长持续增长，开始录音已确认")
             }
         }
+        confirmedTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func receiveReply(_ data: Data) {
@@ -413,9 +478,9 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     private func cleanup() {
-        finishLabCommand(false, "系统会话已结束或重置")
         generation = UUID()
         opening = false
+        ending = false
         callUUID = nil
         audioActive = false
         paused = false
@@ -428,6 +493,8 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         playbackData = nil
         WearableService.shared.leaveCommunicationMode()
         preservesWatchDraftOnEnd = false
+        renewManagerBeforeNextCall = true
+        finishLabCommand(false, "系统会话已结束或重置")
     }
 
     func conversationManagerDidBegin(_ manager: ConversationManager) {
@@ -457,6 +524,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     func conversationManager(_ manager: ConversationManager, perform action: ConversationAction) {
         DispatchQueue.main.async {
             guard manager === self.manager else { action.fail(); return }
+            guard action.conversationUUID == self.callUUID else {
+                DeviceDiagnostics.shared.log("LCK 忽略旧会话动作 uuid=\(action.conversationUUID)")
+                action.fulfill()
+                return
+            }
             switch action {
             case is StartConversationAction:
                 action.fulfill()
@@ -485,13 +557,16 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func conversationManager(_ manager: ConversationManager, timedOutPerforming action: ConversationAction) {
-        DispatchQueue.main.async { self.log("系统动作超时"); self.finishBackgroundTask() }
+        DispatchQueue.main.async {
+            guard manager === self.manager, action.conversationUUID == self.callUUID else { return }
+            self.abortConnection("系统动作超时；本轮已清理，可重新按键")
+        }
         action.fail()
     }
 
     func conversationManager(_ manager: ConversationManager, didActivate audioSession: AVAudioSession) {
         DispatchQueue.main.async {
-            guard manager === self.manager, self.callUUID != nil else { return }
+            guard manager === self.manager, self.callUUID != nil, !self.ending else { return }
             self.audioActive = true
             self.audioReleaseConfirmed = false
             self.paused = false
