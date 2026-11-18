@@ -692,6 +692,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             if let existing = inputPicker as? AVInputPickerInteraction { picker = existing }
             else {
                 picker = AVInputPickerInteraction()
+                picker.delegate = self
                 microphoneButton.addInteraction(picker)
                 inputPicker = picker
             }
@@ -784,5 +785,32 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         BLEProbe.shared.connect(BLEProbe.shared.devices[indexPath.row])
+    }
+}
+
+@available(iOS 26.0, *)
+extension DeviceDiagnosticsViewController: AVInputPickerInteraction.Delegate {
+    func inputPickerInteractionDidEndDismissing(_ inputPickerInteraction: AVInputPickerInteraction) {
+        // A picker dismissal isn't a selection callback. Ask the user to confirm
+        // the actual route instead of silently persisting a cancelled/old choice.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self, self.view.window != nil,
+                  self.presentedViewController == nil,
+                  UIApplication.shared.applicationState == .active else { return }
+            let session = AVAudioSession.sharedInstance()
+            guard let input = session.currentRoute.inputs.first else {
+                DeviceDiagnostics.shared.log("Audio input picker dismissed without active input; no preference saved")
+                return
+            }
+            let alert = UIAlertController(title: "记住录音麦克风", message: "当前实际输入：\(input.portName)。设为手表录音麦克风后，下次按手表会自动请求恢复这个设备；请再验证一次锁屏录音。", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "记住此麦克风", style: .default) { _ in
+                WearableService.shared.preferredRecordingInputUID = input.uid
+                WearableService.shared.preferredRecordingInputName = input.portName
+                DeviceDiagnostics.shared.log("Audio input picker confirmed name=\(input.portName) uid=\(input.uid)")
+                self.refresh()
+            })
+            alert.addAction(UIAlertAction(title: "仅本次使用", style: .cancel))
+            self.present(alert, animated: true)
+        }
     }
 }

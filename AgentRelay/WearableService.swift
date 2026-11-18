@@ -798,6 +798,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             updateRecordingInputWarning()
 
             startRecordingHealthMonitor()
+            restoreSelectedInputAfterRecordingStarts(recorder)
 
             updateNowPlayingInfo(statusText: "正在录音，可以切换到其他 App")
             notifyStatusChanged()
@@ -807,6 +808,29 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             print("[WearableService] 创建 AVAudioRecorder 失败: \(error)")
             DeviceDiagnostics.shared.log("Record creation error=\(error)")
             recoverFromRecordingStartFailure(message: "录音创建失败，请打开 App 重试")
+        }
+    }
+
+    private func restoreSelectedInputAfterRecordingStarts(_ recorder: AVAudioRecorder) {
+        guard let selectedUID = preferredRecordingInputUID else { return }
+        // LCK can establish its default route while I/O starts. Retry only after
+        // record(), with a fresh availableInputs object, and verify the real route.
+        // Each callback is scoped to this exact recording and preference.
+        for (index, delay) in [0.35, 1.0, 2.0].enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak recorder] in
+                guard let self = self, let recorder = recorder,
+                      self.audioRecorder === recorder, self.isRecording, recorder.isRecording,
+                      self.preferredRecordingInputUID == selectedUID else { return }
+                let session = AVAudioSession.sharedInstance()
+                let matches = session.currentRoute.inputs.contains { $0.uid == selectedUID }
+                if !matches {
+                    do { try self.selectRecordingInput(session, retryAfterPreparation: true) }
+                    catch { DeviceDiagnostics.shared.log("Audio input after-I/O request failed: \(error.localizedDescription)") }
+                }
+                self.updateRecordingInputWarning()
+                DeviceDiagnostics.shared.log("Audio input after-I/O attempt=\(index + 1) captured=\(recorder.currentTime) target=\(self.preferredRecordingInputName ?? selectedUID) actual=\(session.currentRoute.inputs.map { $0.portName })")
+                self.notifyStatusChanged()
+            }
         }
     }
 
