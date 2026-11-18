@@ -628,7 +628,11 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         } else {
             trialLabel.text = BLEProbe.shared.connectionDescription
             let input = WearableService.shared.recordingInputName
+            let inputMode = WearableService.shared.preferredRecordingInputUID == nil
+                ? "跟随系统" : (WearableService.shared.preferredRecordingInputName ?? "指定麦克风")
+            trialLabel.text! += "\n麦克风设置：\(inputMode)"
             trialLabel.text! += "\n实际录音输入：\(input.isEmpty ? "尚未启用" : input)"
+            if let error = WearableService.shared.recordingInputSelectionError { trialLabel.text! += "\n⚠️ \(error)" }
             if WearableService.shared.isRecording, let warning = WearableService.shared.recordingInputWarning {
                 trialLabel.text! += "\n⚠️ \(warning)"
             }
@@ -663,15 +667,16 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
     @objc private func chooseMicrophone() {
         let session = AVAudioSession.sharedInstance()
-        let choices = UIAlertController(title: "录音麦克风", message: "设置下一段录音优先使用的输入。系统可能未执行切换，请以页面实际输入为准；不匹配时显示提示。", preferredStyle: .actionSheet)
-        choices.addAction(UIAlertAction(title: "自动（优先大疆及外接麦克风）", style: .default) { _ in
+        let choices = UIAlertController(title: "录音麦克风", message: "默认跟随 iPhone 的系统输入；也可指定下面任意麦克风，对下一段生效。以实际输入为准；指定设备不可用时会提示，不自动替换。", preferredStyle: .actionSheet)
+        choices.addAction(UIAlertAction(title: "跟随系统" + (WearableService.shared.preferredRecordingInputUID == nil ? "（已选）" : ""), style: .default) { _ in
             WearableService.shared.preferredRecordingInputUID = nil
-            DeviceDiagnostics.shared.log("Audio input preference=自动")
+            DeviceDiagnostics.shared.log("Audio input preference=跟随系统")
         })
         for input in session.availableInputs ?? [] {
             let title = input.portName + (input.uid == WearableService.shared.preferredRecordingInputUID ? "（已选）" : "")
             choices.addAction(UIAlertAction(title: title, style: .default) { _ in
                 WearableService.shared.preferredRecordingInputUID = input.uid
+                WearableService.shared.preferredRecordingInputName = input.portName
                 DeviceDiagnostics.shared.log("Audio input preference=\(input.portName)")
             })
         }

@@ -16,6 +16,8 @@ LCK 管理系统语音会话，并在系统激活音频后启动采集；AVAudio
 
 输入选择是向系统发出的偏好请求。录音器准备后可再次请求路由，实际输入以 currentRoute 和采音诊断为准。不得在录音器启动前因输入偏好未立即匹配而用固定两秒超时终止整个会话；未匹配时显示实际输入和提示。设备不可用、录音器启动失败与采音中断仍分别报告。
 
+默认跟随系统输入，不按品牌、名称或端口类型抢占输入。用户可从 iOS 提供的输入列表指定设备，按 UID 记住选择；指定设备不可用时提示重新连接或切回“跟随系统”，不自动替换为另一支麦克风。页面分别展示选择模式与实际输入。
+
 暂停和发送后结束系统通话，继续录音时重新请求 LCK 激活。Agent 逻辑会话独立保存，因此同会话发送不依赖一直保留一个空闲系统通话。PWR 结束操作同时关闭逻辑会话，使下一条进入新的 Agent 对话。
 
 Apple 说明 voiceChat 模式本身会自动应用 allowBluetoothHFP。因此保留 voiceChat 时，不能把删除显式 allowBluetooth 当作禁止 HFP 的实现。参考：https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/voicechat

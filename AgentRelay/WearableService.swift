@@ -79,30 +79,41 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var communicationGeneration = UUID()
     private var requestedRecordingInput: AVAudioSessionPortDescription?
     public private(set) var recordingInputWarning: String?
+    public private(set) var recordingInputSelectionError: String?
+    public var preferredRecordingInputName: String? {
+        get { UserDefaults.standard.string(forKey: "relay_recording_input_name") }
+        set { UserDefaults.standard.set(newValue, forKey: "relay_recording_input_name") }
+    }
     public var preferredRecordingInputUID: String? {
         get { UserDefaults.standard.string(forKey: "relay_recording_input_uid") }
-        set { UserDefaults.standard.set(newValue, forKey: "relay_recording_input_uid") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "relay_recording_input_uid")
+            if newValue == nil { preferredRecordingInputName = nil }
+            recordingInputSelectionError = nil
+        }
     }
     private func selectRecordingInput(_ session: AVAudioSession, retryAfterPreparation: Bool = false) throws {
         let inputs = session.availableInputs ?? []
         DeviceDiagnostics.shared.log("Audio inputs available=" + inputs.map { "\($0.portName) [\($0.portType.rawValue)] uid=\($0.uid)" }.joined(separator: "; "))
-        let preferred: AVAudioSessionPortDescription?
-        if let saved = preferredRecordingInputUID {
-            guard let input = inputs.first(where: { $0.uid == saved }) else {
-                throw NSError(domain: "RelayAudioInput", code: 1, userInfo: [NSLocalizedDescriptionKey: "指定的录音麦克风不可用，请连接该设备或改为自动选择"])
-            }
-            preferred = input
-        } else {
-            preferred = inputs.first {
-                let name = $0.portName.lowercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "")
-                return name.contains("dji") || name.contains("大疆") || name.contains("micmini")
-            } ?? inputs.first { $0.portType == .usbAudio || $0.portType == .headsetMic }
-              ?? inputs.first { $0.portType == .bluetoothHFP }
-              ?? inputs.first { $0.portType == .builtInMic }
+        guard let saved = preferredRecordingInputUID else {
+            requestedRecordingInput = nil
+            recordingInputWarning = nil
+            recordingInputSelectionError = nil
+            if session.preferredInput != nil { try session.setPreferredInput(nil) }
+            DeviceDiagnostics.shared.log("Audio input mode=跟随系统 actual=\(session.currentRoute.inputs.map { $0.portName })")
+            return
         }
+        guard let preferred = inputs.first(where: { $0.uid == saved }) else {
+            let message = "指定的\(preferredRecordingInputName ?? "录音麦克风")不可用，请连接该设备或选择“跟随系统”"
+            recordingInputSelectionError = message
+            throw NSError(domain: "RelayAudioInput", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        recordingInputSelectionError = nil
         requestedRecordingInput = preferred
-        if retryAfterPreparation || session.preferredInput?.uid != preferred?.uid { try session.setPreferredInput(preferred) }
-        DeviceDiagnostics.shared.log("Audio input requested=\(preferred?.portName ?? "系统自动") actual=\(session.currentRoute.inputs.map { $0.portName })")
+        if session.preferredInput?.uid != preferred.uid || (retryAfterPreparation && !session.currentRoute.inputs.contains(where: { $0.uid == preferred.uid })) {
+            try session.setPreferredInput(preferred)
+        }
+        DeviceDiagnostics.shared.log("Audio input requested=\(preferred.portName) actual=\(session.currentRoute.inputs.map { $0.portName })")
     }
     private func updateRecordingInputWarning() {
         let actual = AVAudioSession.sharedInstance().currentRoute.inputs
@@ -205,7 +216,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             }
             try session.setActive(true)
             if shortcutRecording && forRecording {
-                // 快捷录音允许 HFP 输入；优先大疆，其次其他外接输入，再退回手机。
+                // Follow system routing unless the user explicitly selected an input UID.
                 try selectRecordingInput(session)
             }
             DeviceDiagnostics.shared.log("Audio session active recording=\(forRecording) category=\(session.category.rawValue) inputAvailable=\(session.isInputAvailable) sampleRate=\(session.sampleRate)")
@@ -214,7 +225,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         } catch {
             print("[WearableService] 音频会话配置失败 (forRecording=\(forRecording)): \(error)")
             let nsError = error as NSError
-            DeviceDiagnostics.shared.log("Audio session error domain=\(nsError.domain) code=\(nsError.code) recording=\(forRecording)")
+            DeviceDiagnostics.shared.log("Audio session error domain=\(nsError.domain) code=\(nsError.code) recording=\(forRecording) detail=\(error.localizedDescription)")
             return false
         }
     }
@@ -746,7 +757,14 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             // A preferred route is a request. Never gate I/O startup on its immediate effect.
             if communicationMode || shortcutRecording {
                 do { try selectRecordingInput(session, retryAfterPreparation: true) }
-                catch { DeviceDiagnostics.shared.log("Audio input retry after preparation failed: \(error.localizedDescription)") }
+                catch {
+                    DeviceDiagnostics.shared.log("Audio input retry after preparation failed: \(error.localizedDescription)")
+                    if recordingInputSelectionError != nil {
+                        recorder.stop()
+                        recoverFromRecordingStartFailure(message: recordingInputSelectionError!)
+                        return
+                    }
+                }
             }
             // record() 自身会执行 prepare，不因为预准备失败就跳过实际启动。
             let started = recorder.record()
