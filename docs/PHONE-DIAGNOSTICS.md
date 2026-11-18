@@ -44,3 +44,10 @@ GAP repeat pairing handle=1; existing bond retained; physical pairing reset requ
 6186ebb 增加物理 BOOT 八秒恢复入口，只在已确认冲突且未加密的当前连接生效。
 在 NimBLE host 队列内校验连接和对端身份，删除当前对端配对后断线重连。
 需要用户物理长按配合，尚不能标记录音恢复成功。
+
+6186ebb 已刷入并校验写入哈希。用户随后完成八秒 BOOT 长按，串口实机确认：
+旧对端删除 rc=0、重连成功、`encrypted=1 bonded=1`，快照返回 `capture=0 error=0`。
+之后 BOOT 长按为 `encrypted=1 subscribed=1 ready=1`，手机返回 received/starting，
+约八秒后返回 rejected、error=6、capture=0。说明配对与协议往返已恢复，采音启动仍失败。
+手机端上报仍无报告，正在等待用户确认 App 首页登录/联网状态；错误6不提供具体音频失败原因。
+不要重复清除已恢复的配对记录，也不要把这次链路修复标记为录音修复。
