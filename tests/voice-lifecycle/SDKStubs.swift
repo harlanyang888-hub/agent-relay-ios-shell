@@ -153,7 +153,7 @@ final class ConversationManager {
         Self.instances.append(self)
         DispatchQueue.main.async { if Self.autoReady { self.delegate?.conversationManagerDidBegin(self) } }
     }
-    func perform(_ actions: [ConversationAction]) async throws {
+    @MainActor func perform(_ actions: [ConversationAction]) async throws {
         guard !invalidated else { throw TestFailure.rejected }
         for action in actions {
             self.actions.append(action)

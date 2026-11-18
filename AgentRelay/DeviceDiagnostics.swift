@@ -18,12 +18,14 @@ final class DeviceDiagnostics {
     private var retryAfter = Date.distantPast
     private let runID = UUID().uuidString
     private var scheduledUpload: DispatchWorkItem?
+    private(set) var uploadStatus = "等待登录后上报"
 
     func configureUpload(endpoint: String, cookie: String?) {
         guard URL(string: endpoint)?.scheme == "https" else { return }
         if uploadEndpoint != endpoint || uploadCookie != cookie { uploadedGeneration = -1 }
         uploadEndpoint = endpoint
         uploadCookie = cookie
+        if cookie?.isEmpty != false { uploadStatus = "等待登录后上报" }
         if uploadTimer == nil {
             uploadTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.flushUpload() }
         }
@@ -53,6 +55,7 @@ final class DeviceDiagnostics {
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
         request.setValue(endpoint, forHTTPHeaderField: "Origin")
         uploading = true
+        uploadStatus = "正在上报设备日志"
         var backgroundTask: UIBackgroundTaskIdentifier = .invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Upload device diagnostics") {
             if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
@@ -65,7 +68,13 @@ final class DeviceDiagnostics {
                 if error == nil, let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
                    self.uploadEndpoint == endpoint, self.uploadCookie == cookie {
                     self.uploadedGeneration = sentGeneration
-                } else { self.retryAfter = Date().addingTimeInterval(30) }
+                    self.uploadStatus = "最近已上报：" + ISO8601DateFormatter().string(from: Date())
+                } else {
+                    let code = (response as? HTTPURLResponse)?.statusCode
+                    self.uploadStatus = code.map { "日志上报 HTTP \($0)，稍后重试" }
+                        ?? "日志上报暂不可达，稍后重试"
+                    self.retryAfter = Date().addingTimeInterval(30)
+                }
             }
         }.resume()
     }
@@ -653,7 +662,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         navigationItem.leftBarButtonItem = UIBarButtonItem(title: "麦克风授权", style: .plain,
             target: self, action: #selector(openVoiceProbe))
         let end = UIButton(type: .system)
-        end.setTitle("结束并发送", for: .normal)
+        end.setTitle("结束对话", for: .normal)
         end.addTarget(self, action: #selector(endConversation), for: .touchUpInside)
         let controls = UIStackView(arrangedSubviews: [scan, disconnect, end, copy])
         controls.distribution = .fillEqually
@@ -673,6 +682,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let help = UILabel()
         help.text = "首次使用先登录、授权麦克风并添加按钮。之后按硬件键自动建立语音会话并开始说话，再按结束本轮并发送。锁屏和其他 App 中也可尝试触发。iOS 18 手动划掉 App 后需重新打开。"
         if BLERecoveryLab.enabled { help.text = "恢复链路测试 · \(BLERecoveryLab.usesASK ? "ASK 系统授权" : "普通蓝牙恢复")。连接电脑恢复模拟器后，可锁屏点电脑的开始/结束。断链15秒仅验证重连与补交；iOS 18 强退后仍需手动重开。" }
+        if BLERecoveryLab.usesASK { help.text = "BOOT 长按：开始 / 发送本条；短按：暂停 / 继续。PWR 长按：发送并结束对话。中断后的草稿会保留，短按继续、长按发送。首次配对和麦克风授权需要打开 App。" }
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
@@ -698,15 +708,25 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.alwaysBounceVertical = true
+        view.addSubview(scroll)
+        scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 8),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -12),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -24),
             controls.heightAnchor.constraint(equalToConstant: 40),
             recordButton.heightAnchor.constraint(equalToConstant: 40),
-            table.heightAnchor.constraint(equalTo: stack.heightAnchor, multiplier: 0.18)
+            table.heightAnchor.constraint(equalToConstant: 140),
+            logView.heightAnchor.constraint(equalToConstant: 280)
         ])
         BLEProbe.shared.onChange = { [weak self] in self?.table.reloadData() }
         // Service initialization can log synchronously. Defer UI updates so a
@@ -743,6 +763,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             if BLERecoveryLab.enabled { trialLabel.text! += "\n系统会话启动：\(BLERecoveryLab.immediateSystemStart ? "立即请求（无网络预检）" : "先鉴权再请求（原路径）")" }
             if #available(iOS 17.4, *) { trialLabel.text! += "\n" + VoiceConversationProbe.shared.status }
             if #available(iOS 17.4, *), BLERecoveryLab.usesASK { trialLabel.text! += "\n" + WatchVoiceSession.shared.summary }
+            trialLabel.text! += "\n" + DeviceDiagnostics.shared.uploadStatus
             trialLabel.textColor = .label
         }
         trialButton.setTitle(trial.active ? "停止采样并生成报告" : "开始 44 秒大疆按键采样", for: .normal)

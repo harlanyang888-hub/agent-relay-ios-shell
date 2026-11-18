@@ -341,6 +341,7 @@ final class WatchVoiceSession {
         VoiceConversationProbe.shared.executeLabCommand(command) { [weak self] ok, detail in
             guard let self = self else { return }
             self.log(detail)
+            self.lastError = ok ? nil : detail
             if !ok {
                 _ = self.pauseDraft()
                 VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
@@ -547,7 +548,7 @@ final class WatchVoiceSession {
                     guard let index = self.journal.deliveries.firstIndex(where: { $0.id == delivery.id }) else { return }
                     let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                     let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-                    let receiptMatches = !idempotent || (json?["idempotentUpload"] as? Bool == true && json?["requestId"] as? String == delivery.id)
+                    let receiptMatches = !idempotent || (json?["idempotentUpload"] as? Bool == true && json?["requestId"] as? String == delivery.id && json?["messageId"] as? String == delivery.id)
                     if error == nil, (200...299).contains(status), receiptMatches, json?["ok"] as? Bool == true,
                        let conversation = json?["conversationId"] as? String, !conversation.isEmpty,
                        let message = json?["messageId"] as? String, !message.isEmpty {
@@ -563,6 +564,9 @@ final class WatchVoiceSession {
                     } else if [400, 410, 413, 415, 422].contains(status) {
                         self.journal.deliveries[index].state = "needsReview"
                         self.lastError = "服务器拒绝上传 HTTP \(status)，录音文件已保留，需检查文件或原对话"
+                    } else if [401, 403].contains(status) {
+                        self.journal.deliveries[index].state = "pending"
+                        self.lastError = "录音已保存；请重新登录，恢复后自动补发"
                     } else if idempotent, !["voice_result_uncertain", "voice_idempotency_conflict", "voice_session_deleted"].contains(json?["error"] as? String ?? ""),
                               !(status == 200 && !receiptMatches) {
                         self.journal.deliveries[index].state = "pending"
@@ -612,6 +616,8 @@ final class WatchVoiceSession {
                 guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
                       json?["state"] as? String == "complete", json?["requestId"] as? String == id,
                       receipt?["requestId"] as? String == id,
+                      receipt?["ok"] as? Bool == true, receipt?["messageId"] as? String == id,
+                      receipt?["idempotentUpload"] as? Bool == true,
                       let conversation = receipt?["conversationId"] as? String,
                       let index = self.journal.deliveries.firstIndex(where: { $0.id == id && $0.state != "sending" }) else {
                     self.lastError = "尚无确定接收回执；原文件保留，可导出核对，不重复发送"

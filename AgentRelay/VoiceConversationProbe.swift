@@ -324,9 +324,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     private func setPaused(_ value: Bool) {
         guard let uuid = callUUID else { return }
         let attempt = generation
+        let callManager = manager!
         Task { @MainActor in
             do {
-                try await manager.perform([PauseConversationAction(conversationUUID: uuid, isPaused: value)])
+                guard self.manager === callManager, self.generation == attempt, self.callUUID == uuid else { return }
+                try await callManager.perform([PauseConversationAction(conversationUUID: uuid, isPaused: value)])
             } catch {
                 guard attempt == self.generation else { return }
                 self.log("暂停/恢复请求失败：\(error.localizedDescription)")
@@ -349,7 +351,10 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
         let attempt = generation
         let callManager = manager!
         Task { @MainActor in
-            do { try await callManager.perform([EndConversationAction(conversationUUID: uuid)]) }
+            do {
+                guard self.manager === callManager, self.generation == attempt, self.callUUID == uuid else { return }
+                try await callManager.perform([EndConversationAction(conversationUUID: uuid)])
+            }
             catch {
                 guard self.manager === callManager, self.generation == attempt, self.callUUID == uuid else { return }
                 self.log("结束请求失败：\(error.localizedDescription)")
