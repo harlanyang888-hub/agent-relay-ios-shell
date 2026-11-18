@@ -548,6 +548,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard peripheral.identifier == selected?.identifier else { return }
         if let error = error { DeviceDiagnostics.shared.log("BLE 服务错误 \(error)"); return }
         for service in peripheral.services ?? [] {
             if service.uuid == buttonService {
@@ -561,6 +562,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard peripheral.identifier == selected?.identifier else { return }
         if let error = error { DeviceDiagnostics.shared.log("BLE 特征错误 \(error)"); return }
         for characteristic in service.characteristics ?? [] {
             if BLERecoveryLab.enabled, service.uuid == buttonService {
@@ -589,6 +591,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral.identifier == selected?.identifier else { return }
         if peripheral.identifier == selected?.identifier, characteristic.uuid == CBUUID(string: "FFF4") || characteristic.uuid == buttonEvent {
             notificationsReady = characteristic.isNotifying && error == nil
         }
