@@ -79,6 +79,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     private var communicationGeneration = UUID()
     private var inputRouteDeadline: Date?
     private var inputRouteRetry: DispatchWorkItem?
+    public var isWaitingForInputRoute: Bool { inputRouteRetry != nil && inputRouteDeadline != nil }
     public var preferredRecordingInputUID: String? {
         get { UserDefaults.standard.string(forKey: "relay_recording_input_uid") }
         set { UserDefaults.standard.set(newValue, forKey: "relay_recording_input_uid") }

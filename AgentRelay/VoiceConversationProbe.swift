@@ -336,10 +336,22 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             setPaused(true)
             return
         }
-        wantsRecording = false
         WearableService.shared.startRecording()
+        confirmRecordingStartAfterInputRoute(generation)
+    }
+
+    private func confirmRecordingStartAfterInputRoute(_ attempt: UUID) {
+        guard attempt == generation, wantsRecording, audioActive, callUUID != nil else { return }
+        if WearableService.shared.isWaitingForInputRoute {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.confirmRecordingStartAfterInputRoute(attempt)
+            }
+            return
+        }
+        wantsRecording = false
         guard WearableService.shared.isRecording else {
             log("系统已激活，但录音启动失败")
+            finishLabCommand(false, "录音输入未就绪或录音启动失败；详情见音频输入诊断")
             setPaused(true)
             return
         }
@@ -506,6 +518,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
                 return
             }
             self.audioActive = false
+            WearableService.shared.cancelPendingInputRoute()
             self.audioReleaseConfirmed = true
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
