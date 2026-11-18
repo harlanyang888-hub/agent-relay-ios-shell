@@ -550,9 +550,6 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         title = "穿戴设备"
         view.backgroundColor = .systemBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
-        if (UIApplication.shared.delegate as? AppDelegate)?.nativeAudioIsolationActive == true {
-            navigationItem.rightBarButtonItem = UIBarButtonItem(title: "打开网页", style: .plain, target: self, action: #selector(close))
-        }
         let scan = UIButton(type: .system)
         scan.setTitle("连接手表 / 按钮", for: .normal)
         scan.addTarget(self, action: #selector(scanBLE), for: .touchUpInside)
@@ -586,9 +583,6 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let help = UILabel()
         help.text = "首次使用先登录、授权麦克风并添加按钮。之后按硬件键自动建立语音会话并开始说话，再按结束本轮并发送。锁屏和其他 App 中也可尝试触发。iOS 18 手动划掉 App 后需重新打开。"
         if BLERecoveryLab.enabled { help.text = "恢复链路测试 · \(BLERecoveryLab.usesASK ? "ASK 系统授权" : "普通蓝牙恢复")。连接电脑恢复模拟器后，可锁屏点电脑的开始/结束。断链15秒仅验证重连与补交；iOS 18 强退后仍需手动重开。" }
-        if (UIApplication.shared.delegate as? AppDelegate)?.nativeAudioIsolationActive == true {
-            help.text = "音频隔离对照：本次启动未创建内嵌网页和提示音播放器。请保持两台音频设备连接，先做前台麦克风对照。测试后可点右上角打开网页；重新启动 App 会再次进入隔离页。"
-        }
         help.font = .systemFont(ofSize: 13)
         help.numberOfLines = 0
         table.dataSource = self
@@ -622,7 +616,11 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             table.heightAnchor.constraint(equalTo: stack.heightAnchor, multiplier: 0.18)
         ])
         BLEProbe.shared.onChange = { [weak self] in self?.table.reloadData() }
-        DeviceDiagnostics.shared.onChange = { [weak self] in self?.refresh() }
+        // Service initialization can log synchronously. Defer UI updates so a
+        // refresh never re-enters initialization of the same static singleton.
+        DeviceDiagnostics.shared.onChange = { [weak self] in
+            DispatchQueue.main.async { [weak self] in self?.refresh() }
+        }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
     }
@@ -639,10 +637,6 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             }
         } else {
             trialLabel.text = BLEProbe.shared.connectionDescription
-            if BLERecoveryLab.nativeAudioIsolation {
-                trialLabel.text! += (UIApplication.shared.delegate as? AppDelegate)?.nativeAudioIsolationActive == true
-                    ? "\n隔离状态：未创建网页" : "\n隔离状态：网页已加载"
-            }
             let input = WearableService.shared.recordingInputName
             let inputMode = WearableService.shared.preferredRecordingInputUID == nil
                 ? "跟随系统" : (WearableService.shared.preferredRecordingInputName ?? "指定麦克风")
@@ -806,28 +800,13 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         refresh()
     }
     @objc private func close() {
-        if let app = UIApplication.shared.delegate as? AppDelegate, app.nativeAudioIsolationActive {
-            let service = WearableService.shared
-            var callFinished = true
-            if #available(iOS 17.4, *) {
-                callFinished = VoiceConversationProbe.shared.canChangeLaunchPath && VoiceConversationProbe.shared.audioReleaseConfirmed
-            }
-            guard !service.isRecording, !service.inputComparisonActive, callFinished else {
-                let alert = UIAlertController(title: "先结束音频测试", message: "等录音和系统会话结束，再打开网页，避免在测试中引入网页音频。", preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "知道了", style: .default))
-                present(alert, animated: true)
-                return
-            }
-        }
         WearableService.shared.stopInputComparison()
         BLEButtonTrial.shared.finish(reason: "关闭测试页")
         BLEProbe.shared.stopScan()
         refreshTimer?.invalidate()
         DeviceDiagnostics.shared.onChange = nil
         BLEProbe.shared.onChange = nil
-        if let app = UIApplication.shared.delegate as? AppDelegate, app.nativeAudioIsolationActive {
-            app.showWebInterface()
-        } else { dismiss(animated: true) }
+        dismiss(animated: true)
     }
     deinit { refreshTimer?.invalidate() }
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { BLEProbe.shared.devices.count }

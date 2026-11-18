@@ -5,7 +5,6 @@ import AccessorySetupKit
 enum BLERecoveryLab {
     static var enabled: Bool { Bundle.main.object(forInfoDictionaryKey: "RelayBLERecoveryLab") as? Bool == true }
     static var usesASK: Bool { enabled && Bundle.main.object(forInfoDictionaryKey: "RelayUseAccessorySetupKit") as? Bool == true }
-    static var nativeAudioIsolation: Bool { enabled && Bundle.main.object(forInfoDictionaryKey: "RelayNativeAudioIsolation") as? Bool == true }
     static let service = "A8D70200-6B44-4E93-A2D5-73F2A34B8180"
     static let event = "A8D70201-6B44-4E93-A2D5-73F2A34B8180"
     static let ack = "A8D70202-6B44-4E93-A2D5-73F2A34B8180"
