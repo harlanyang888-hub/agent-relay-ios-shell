@@ -671,15 +671,21 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     @objc private func chooseMicrophone() {
         let session = AVAudioSession.sharedInstance()
         if #available(iOS 26.0, *) {
-            guard WearableService.shared.isRecording else {
-                let alert = UIAlertController(title: "先开始一段录音", message: "开始录音后，再点这里打开 iPhone 系统麦克风选择器。选择后请确认页面的实际录音输入，再测试下一次锁屏录音。", preferredStyle: .alert)
+            do {
+                // Configure the same input-capable category used by watch calls.
+                // No recorder, draft, upload or call is started by this settings button.
+                // Never reconfigure an opening/active LCK call from the settings UI.
+                if VoiceConversationProbe.shared.canChangeLaunchPath {
+                    try session.setCategory(.playAndRecord, mode: .voiceChat,
+                        options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+                }
+                try WearableService.shared.useSystemRecordingInputPicker()
+            }
+            catch {
+                DeviceDiagnostics.shared.log("Audio input picker preparation failed: \(error.localizedDescription)")
+                let alert = UIAlertController(title: "麦克风设置未就绪", message: error.localizedDescription, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "知道了", style: .default))
                 present(alert, animated: true)
-                return
-            }
-            do { try WearableService.shared.useSystemRecordingInputPicker() }
-            catch {
-                DeviceDiagnostics.shared.log("Audio input picker release preference failed: \(error.localizedDescription)")
                 return
             }
             let picker: AVInputPickerInteraction
@@ -689,7 +695,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
                 microphoneButton.addInteraction(picker)
                 inputPicker = picker
             }
-            DeviceDiagnostics.shared.log("Audio input native picker presented actual=\(session.currentRoute.inputs.map { $0.portName })")
+            DeviceDiagnostics.shared.log("Audio input native picker presented recording=\(WearableService.shared.isRecording) actual=\(session.currentRoute.inputs.map { $0.portName })")
             picker.present()
             return
         }
