@@ -1,5 +1,6 @@
 #include "watch_protocol.h"
 #include "pairing_reset.h"
+#include "watch_link.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,6 +9,24 @@ static void snapshot(watch_state *s,uint8_t *p,uint8_t result,uint8_t capture) {
  p[6]=42;p[10]=7;p[12]=100;p[16]=capture;
 }
 int main(void) {
+ // Real trace: ENC_CHANGE arrived before CONNECT. All permutations of a secure
+ // connection and restored subscription must reach the same usable state.
+ const unsigned permutations[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+ for(unsigned p=0;p<6;++p) {
+  watch_link_state link;watch_link_init(&link);
+  for(unsigned i=0;i<3;++i) {
+   switch(permutations[p][i]) {
+    case 0:watch_link_up(&link,1,true);break;
+    case 1:watch_link_secure(&link,1,true);break;
+    case 2:watch_link_subscribe(&link,1,true);break;
+   }
+  }
+  assert(link.handle==1 && link.secure && link.subscribed);
+  watch_link_secure(&link,2,false);assert(link.secure);
+  assert(!watch_link_down(&link,2));assert(link.secure && link.subscribed);
+  assert(watch_link_down(&link,1));assert(!link.secure && !link.subscribed);
+  watch_link_up(&link,1,false);assert(!link.secure && !link.subscribed);
+ }
  // Existing trusted links and everyday BOOT gestures must never lose keys.
  assert(!watch_pairing_reset_allowed(false,false,true,10000,false));
  assert(!watch_pairing_reset_allowed(true,true,true,10000,false));

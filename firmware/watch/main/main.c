@@ -18,6 +18,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "watch_protocol.h"
 #include "pairing_reset.h"
+#include "watch_link.h"
 
 // All BLE callbacks enqueue events. Only the application task owns recording state.
 #define UUID(x) BLE_UUID128_INIT(0x80,0x81,0x4b,0xa3,0xf2,0x73,0xd5,0xa2,0x93,0x4e,0x44,0x6b,x,0x02,0xd7,0xa8)
@@ -87,13 +88,15 @@ static int gap_event(struct ble_gap_event *event,void *arg) {
     (void)arg;
     switch(event->type) {
     case BLE_GAP_EVENT_CONNECT:
-        ESP_LOGI(TAG,"GAP connect status=%d handle=%u",event->connect.status,event->connect.conn_handle);
         if(event->connect.status==0) {
             enqueue(LINK_UP,event->connect.conn_handle,true);
-            int rc=ble_gap_security_initiate(event->connect.conn_handle);
-            ESP_LOGI(TAG,"GAP security initiate handle=%u rc=%d",event->connect.conn_handle,rc);
+            struct ble_gap_conn_desc desc;
+            bool encrypted=ble_gap_conn_find(event->connect.conn_handle,&desc)==0 && desc.sec_state.encrypted;
+            int rc=encrypted ? 0 : ble_gap_security_initiate(event->connect.conn_handle);
+            ESP_LOGI(TAG,"GAP security initiate handle=%u encrypted_now=%d rc=%d",event->connect.conn_handle,encrypted,rc);
         }
         else advertise();
+        ESP_LOGI(TAG,"GAP connect status=%d handle=%u",event->connect.status,event->connect.conn_handle);
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG,"GAP disconnect handle=%u reason=%d",event->disconnect.conn.conn_handle,event->disconnect.reason);
@@ -178,7 +181,8 @@ void app_main(void) {
     ble_store_config_init();nimble_port_freertos_init(host_task);
     ble_npl_event_init(&reset_pair_event,reset_conflicting_pair,NULL);
     watch_state state;watch_init(&state,esp_random());button boot={0},power={0};
-    uint16_t handle=BLE_HS_CONN_HANDLE_NONE;bool secure=false,subscribed=false,conflicting_pair=false,reset_requested=false;
+    watch_link_state link;watch_link_init(&link);
+    bool conflicting_pair=false,reset_requested=false;
     uint64_t retry_at=0,sync_at=0,gesture_deadline=0;
     int deferred_gesture=-1;
     ESP_LOGI(TAG,"watch protocol v3; requires matching phone build; no local microphone capture");
@@ -186,13 +190,28 @@ void app_main(void) {
     while(true) {
         uint64_t now=esp_timer_get_time()/1000;app_event event;
         while(xQueueReceive(events,&event,0)==pdTRUE) {
-            if(event.kind==LINK_UP) {handle=event.handle;secure=false;subscribed=false;conflicting_pair=false;watch_disconnected(&state);}
-            else if(event.kind==LINK_DOWN && event.handle==handle) {handle=BLE_HS_CONN_HANDLE_NONE;secure=false;subscribed=false;conflicting_pair=false;deferred_gesture=-1;sync_at=0;watch_disconnected(&state);}
-            else if(event.handle==handle) {
+            if(event.kind==LINK_UP) {
+                struct ble_gap_conn_desc desc;
+                bool encrypted=ble_gap_conn_find(event.handle,&desc)==0 && desc.sec_state.encrypted;
+                watch_link_up(&link,event.handle,encrypted);
+                conflicting_pair=false;sync_at=0;watch_disconnected(&state);
+                ESP_LOGI(TAG,"application link ready handle=%u encrypted=%d subscribed=%d",link.handle,link.secure,link.subscribed);
+            }
+            else if(event.kind==LINK_DOWN) {
+                if(watch_link_down(&link,event.handle)) {conflicting_pair=false;deferred_gesture=-1;sync_at=0;watch_disconnected(&state);}
+            }
+            else {
+                if(event.kind==SUBSCRIBED) watch_link_subscribe(&link,event.handle,event.enabled);
+                if(event.handle!=link.handle) continue;
                 if(event.kind==PAIR_CONFLICT) conflicting_pair=true;
-                if(event.kind==SECURED) {secure=event.enabled;if(!secure) watch_disconnected(&state);else sync_at=0;}
-                if(event.kind==SUBSCRIBED) {subscribed=event.enabled;if(!subscribed) watch_disconnected(&state);else sync_at=0;}
-                if(event.kind==PHONE_STATE && secure && subscribed) {
+                if(event.kind==SECURED) {
+                    struct ble_gap_conn_desc desc;
+                    bool encrypted=ble_gap_conn_find(event.handle,&desc)==0 && desc.sec_state.encrypted;
+                    watch_link_secure(&link,event.handle,encrypted);
+                    if(!link.secure) watch_disconnected(&state);else sync_at=0;
+                }
+                if(event.kind==SUBSCRIBED) {if(!link.subscribed) watch_disconnected(&state);else sync_at=0;}
+                if(event.kind==PHONE_STATE && link.secure && link.subscribed) {
                     int result=watch_accept(&state,event.data,20,now);
                     ESP_LOGI(TAG,"phone reply result=%u accepted=%d seq=%u capture=%u error=%u pending=%d",
                         event.data[3],result,(unsigned)(event.data[4]|event.data[5]<<8),event.data[16],event.data[18],state.pending);
@@ -211,15 +230,15 @@ void app_main(void) {
         if(deferred_gesture>=0 && now>=gesture_deadline) {deferred_gesture=-1;pulse(3,40);}
         if(deferred_gesture>=0 && state.ready && !state.pending) {
             enum watch_action action=(enum watch_action)deferred_gesture;deferred_gesture=-1;
-            if(watch_request(&state,action,now)) {transmit(&state,handle);retry_at=now+1000;}
+            if(watch_request(&state,action,now)) {transmit(&state,link.handle);retry_at=now+1000;}
             else pulse(3,40);
         }
         int b=gesture(&boot,!gpio_get_level(GPIO_NUM_0),now),p=gesture(&power,gpio_get_level(GPIO_NUM_10),now);
         if(!boot.stable) reset_requested=false;
-        if(watch_pairing_reset_allowed(conflicting_pair,secure,boot.stable,now-boot.pressed,reset_requested)) {
+        if(watch_pairing_reset_allowed(conflicting_pair,link.secure,boot.stable,now-boot.pressed,reset_requested)) {
             struct ble_gap_conn_desc desc;
-            if(handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(handle,&desc)==0 && !desc.sec_state.encrypted) {
-                reset_pair_target.handle=handle;reset_pair_target.peer=desc.peer_id_addr;
+            if(link.handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(link.handle,&desc)==0 && !desc.sec_state.encrypted) {
+                reset_pair_target.handle=link.handle;reset_pair_target.peer=desc.peer_id_addr;
                 reset_requested=true;deferred_gesture=-1;watch_disconnected(&state);
                 ESP_LOGW(TAG,"PAIR RESET physical BOOT hold accepted; scheduling host operation");
                 ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&reset_pair_event);
@@ -228,8 +247,8 @@ void app_main(void) {
         if(b || p==2) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
             ESP_LOGI(TAG,"button=%s gesture=%s encrypted=%d subscribed=%d ready=%d",
-                p==2 ? "PWR" : "BOOT",p==2 || b==2 ? "long" : "short",secure,subscribed,state.ready);
-            if(action==WATCH_END && secure && subscribed &&
+                p==2 ? "PWR" : "BOOT",p==2 || b==2 ? "long" : "short",link.secure,link.subscribed,state.ready);
+            if(action==WATCH_END && link.secure && link.subscribed &&
                (!state.pending || state.packet[3]!=WATCH_END)) {
                 // Ending is an explicit cancellation intent, including while a
                 // start/save is in flight. Stop retransmitting the old gesture
@@ -237,7 +256,7 @@ void app_main(void) {
                 watch_disconnected(&state);
                 deferred_gesture=WATCH_END;gesture_deadline=now+5000;sync_at=0;
             }
-            else if(!secure || !subscribed || deferred_gesture>=0 || (state.pending && state.packet[3]!=WATCH_SYNC)) pulse(3,40);
+            else if(!link.secure || !link.subscribed || deferred_gesture>=0 || (state.pending && state.packet[3]!=WATCH_SYNC)) pulse(3,40);
             else {
                 // Every gesture gets a fresh phone snapshot, including phone-side UI changes.
                 // Only this one live gesture may wait; there is no historical FIFO.
@@ -245,10 +264,10 @@ void app_main(void) {
                 deferred_gesture=action;gesture_deadline=now+5000;sync_at=0;
             }
         }
-        if(secure && subscribed && !state.pending && now>=sync_at) {
-            if(watch_request(&state,WATCH_SYNC,now)) {transmit(&state,handle);retry_at=now+1000;sync_at=UINT64_MAX;}
+        if(link.secure && link.subscribed && !state.pending && now>=sync_at) {
+            if(watch_request(&state,WATCH_SYNC,now)) {transmit(&state,link.handle);retry_at=now+1000;sync_at=UINT64_MAX;}
         }
-        if(secure && subscribed && state.pending && now>=retry_at) {transmit(&state,handle);retry_at=now+1000;}
+        if(link.secure && link.subscribed && state.pending && now>=retry_at) {transmit(&state,link.handle);retry_at=now+1000;}
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
