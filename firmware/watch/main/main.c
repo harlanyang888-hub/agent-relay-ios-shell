@@ -17,6 +17,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "watch_protocol.h"
+#include "pairing_reset.h"
 
 // All BLE callbacks enqueue events. Only the application task owns recording state.
 #define UUID(x) BLE_UUID128_INIT(0x80,0x81,0x4b,0xa3,0xf2,0x73,0xd5,0xa2,0x93,0x4e,0x44,0x6b,x,0x02,0xd7,0xa8)
@@ -28,10 +29,28 @@ static QueueHandle_t events;
 static portMUX_TYPE packet_lock=portMUX_INITIALIZER_UNLOCKED;
 static uint8_t readable_packet[20];
 static unsigned readable_length;
-enum event_kind { LINK_UP, LINK_DOWN, SUBSCRIBED, SECURED, PHONE_STATE };
+enum event_kind { LINK_UP, LINK_DOWN, SUBSCRIBED, SECURED, PHONE_STATE, PAIR_CONFLICT };
 typedef struct { enum event_kind kind; uint16_t handle; bool enabled; uint8_t data[20]; } app_event;
 static void advertise(void);
 void ble_store_config_init(void);
+static struct ble_npl_event reset_pair_event;
+static struct { uint16_t handle; ble_addr_t peer; } reset_pair_target;
+
+static void reset_conflicting_pair(struct ble_npl_event *event) {
+    (void)event;
+    struct ble_gap_conn_desc desc;
+    int rc=ble_gap_conn_find(reset_pair_target.handle,&desc);
+    if(rc!=0 || desc.sec_state.encrypted ||
+       memcmp(&desc.peer_id_addr,&reset_pair_target.peer,sizeof(ble_addr_t))!=0) {
+        ESP_LOGW(TAG,"PAIR RESET cancelled: connection changed or already secure");return;
+    }
+    rc=ble_store_util_delete_peer(&desc.peer_id_addr);
+    ESP_LOGW(TAG,"PAIR RESET physical BOOT hold; delete connected conflicting peer rc=%d; identity retained",rc);
+    if(rc==0) {
+        rc=ble_gap_terminate(desc.conn_handle,BLE_ERR_REM_USER_CONN_TERM);
+        ESP_LOGI(TAG,"PAIR RESET reconnect requested rc=%d",rc);
+    }
+}
 
 static int access_value(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg) {
     (void)attr;
@@ -94,6 +113,7 @@ static int gap_event(struct ble_gap_event *event,void *arg) {
     // Never silently delete an old bond to accept a new pairing. Explicit reset is separate.
     case BLE_GAP_EVENT_REPEAT_PAIRING:
         ESP_LOGW(TAG,"GAP repeat pairing handle=%u; existing bond retained; physical pairing reset required",event->repeat_pairing.conn_handle);
+        enqueue(PAIR_CONFLICT,event->repeat_pairing.conn_handle,true);
         return BLE_GAP_REPEAT_PAIRING_IGNORE;
     default:break;
     }
@@ -156,8 +176,9 @@ void app_main(void) {
     ble_svc_gap_init();ble_svc_gatt_init();ble_svc_gap_device_name_set("AgentRelay-Watch");
     ESP_ERROR_CHECK(ble_gatts_count_cfg(services));ESP_ERROR_CHECK(ble_gatts_add_svcs(services));
     ble_store_config_init();nimble_port_freertos_init(host_task);
+    ble_npl_event_init(&reset_pair_event,reset_conflicting_pair,NULL);
     watch_state state;watch_init(&state,esp_random());button boot={0},power={0};
-    uint16_t handle=BLE_HS_CONN_HANDLE_NONE;bool secure=false,subscribed=false;
+    uint16_t handle=BLE_HS_CONN_HANDLE_NONE;bool secure=false,subscribed=false,conflicting_pair=false,reset_requested=false;
     uint64_t retry_at=0,sync_at=0,gesture_deadline=0;
     int deferred_gesture=-1;
     ESP_LOGI(TAG,"watch protocol v3; requires matching phone build; no local microphone capture");
@@ -165,9 +186,10 @@ void app_main(void) {
     while(true) {
         uint64_t now=esp_timer_get_time()/1000;app_event event;
         while(xQueueReceive(events,&event,0)==pdTRUE) {
-            if(event.kind==LINK_UP) {handle=event.handle;secure=false;subscribed=false;watch_disconnected(&state);}
-            else if(event.kind==LINK_DOWN && event.handle==handle) {handle=BLE_HS_CONN_HANDLE_NONE;secure=false;subscribed=false;deferred_gesture=-1;sync_at=0;watch_disconnected(&state);}
+            if(event.kind==LINK_UP) {handle=event.handle;secure=false;subscribed=false;conflicting_pair=false;watch_disconnected(&state);}
+            else if(event.kind==LINK_DOWN && event.handle==handle) {handle=BLE_HS_CONN_HANDLE_NONE;secure=false;subscribed=false;conflicting_pair=false;deferred_gesture=-1;sync_at=0;watch_disconnected(&state);}
             else if(event.handle==handle) {
+                if(event.kind==PAIR_CONFLICT) conflicting_pair=true;
                 if(event.kind==SECURED) {secure=event.enabled;if(!secure) watch_disconnected(&state);else sync_at=0;}
                 if(event.kind==SUBSCRIBED) {subscribed=event.enabled;if(!subscribed) watch_disconnected(&state);else sync_at=0;}
                 if(event.kind==PHONE_STATE && secure && subscribed) {
@@ -193,6 +215,16 @@ void app_main(void) {
             else pulse(3,40);
         }
         int b=gesture(&boot,!gpio_get_level(GPIO_NUM_0),now),p=gesture(&power,gpio_get_level(GPIO_NUM_10),now);
+        if(!boot.stable) reset_requested=false;
+        if(watch_pairing_reset_allowed(conflicting_pair,secure,boot.stable,now-boot.pressed,reset_requested)) {
+            struct ble_gap_conn_desc desc;
+            if(handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(handle,&desc)==0 && !desc.sec_state.encrypted) {
+                reset_pair_target.handle=handle;reset_pair_target.peer=desc.peer_id_addr;
+                reset_requested=true;deferred_gesture=-1;watch_disconnected(&state);
+                ESP_LOGW(TAG,"PAIR RESET physical BOOT hold accepted; scheduling host operation");
+                ble_npl_eventq_put(nimble_port_get_dflt_eventq(),&reset_pair_event);
+            }
+        }
         if(b || p==2) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
             ESP_LOGI(TAG,"button=%s gesture=%s encrypted=%d subscribed=%d ready=%d",

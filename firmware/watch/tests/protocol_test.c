@@ -1,4 +1,5 @@
 #include "watch_protocol.h"
+#include "pairing_reset.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +8,14 @@ static void snapshot(watch_state *s,uint8_t *p,uint8_t result,uint8_t capture) {
  p[6]=42;p[10]=7;p[12]=100;p[16]=capture;
 }
 int main(void) {
+ // Existing trusted links and everyday BOOT gestures must never lose keys.
+ assert(!watch_pairing_reset_allowed(false,false,true,10000,false));
+ assert(!watch_pairing_reset_allowed(true,true,true,10000,false));
+ assert(!watch_pairing_reset_allowed(true,false,false,10000,false));
+ assert(!watch_pairing_reset_allowed(true,false,true,1200,false));
+ assert(!watch_pairing_reset_allowed(true,false,true,7999,false));
+ assert(watch_pairing_reset_allowed(true,false,true,8000,false));
+ assert(!watch_pairing_reset_allowed(true,false,true,12000,true));
  watch_state s;uint8_t p[20];watch_init(&s,123);
  assert(!watch_request(&s,WATCH_BOOT_LONG,0));
  assert(watch_request(&s,WATCH_SYNC,0));
