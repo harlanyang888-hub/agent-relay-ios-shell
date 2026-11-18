@@ -68,21 +68,33 @@ static int gap_event(struct ble_gap_event *event,void *arg) {
     (void)arg;
     switch(event->type) {
     case BLE_GAP_EVENT_CONNECT:
-        if(event->connect.status==0) {enqueue(LINK_UP,event->connect.conn_handle,true);ble_gap_security_initiate(event->connect.conn_handle);}
+        ESP_LOGI(TAG,"GAP connect status=%d handle=%u",event->connect.status,event->connect.conn_handle);
+        if(event->connect.status==0) {
+            enqueue(LINK_UP,event->connect.conn_handle,true);
+            int rc=ble_gap_security_initiate(event->connect.conn_handle);
+            ESP_LOGI(TAG,"GAP security initiate handle=%u rc=%d",event->connect.conn_handle,rc);
+        }
         else advertise();
         break;
-    case BLE_GAP_EVENT_DISCONNECT: enqueue(LINK_DOWN,event->disconnect.conn.conn_handle,false);advertise();break;
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG,"GAP disconnect handle=%u reason=%d",event->disconnect.conn.conn_handle,event->disconnect.reason);
+        enqueue(LINK_DOWN,event->disconnect.conn.conn_handle,false);advertise();break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if(event->subscribe.attr_handle==event_handle) enqueue(SUBSCRIBED,event->subscribe.conn_handle,event->subscribe.cur_notify);
         break;
     case BLE_GAP_EVENT_ENC_CHANGE: {
         struct ble_gap_conn_desc desc;
-        bool secure=event->enc_change.status==0 && ble_gap_conn_find(event->enc_change.conn_handle,&desc)==0 && desc.sec_state.encrypted;
+        int rc=ble_gap_conn_find(event->enc_change.conn_handle,&desc);
+        bool secure=event->enc_change.status==0 && rc==0 && desc.sec_state.encrypted;
+        ESP_LOGI(TAG,"GAP encryption handle=%u status=%d lookup=%d encrypted=%d bonded=%d",
+            event->enc_change.conn_handle,event->enc_change.status,rc,rc==0 ? desc.sec_state.encrypted : 0,rc==0 ? desc.sec_state.bonded : 0);
         enqueue(SECURED,event->enc_change.conn_handle,secure);break;
     }
     case BLE_GAP_EVENT_ADV_COMPLETE: advertise();break;
     // Never silently delete an old bond to accept a new pairing. Explicit reset is separate.
-    case BLE_GAP_EVENT_REPEAT_PAIRING: return BLE_GAP_REPEAT_PAIRING_IGNORE;
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        ESP_LOGW(TAG,"GAP repeat pairing handle=%u; existing bond retained; physical pairing reset required",event->repeat_pairing.conn_handle);
+        return BLE_GAP_REPEAT_PAIRING_IGNORE;
     default:break;
     }
     return 0;
