@@ -293,6 +293,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     }
 
     func end() {
+        WearableService.shared.cancelPendingInputRoute()
         submitRecordingBeforeEnding()
         generation = UUID()
         cancelScheduledResume()
