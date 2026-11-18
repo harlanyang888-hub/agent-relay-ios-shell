@@ -92,6 +92,19 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             recordingInputSelectionError = nil
         }
     }
+    private var ownsRecordingInputPreference = false
+
+    // Release only overrides issued by this app; the system picker owns its selection.
+    public func useSystemRecordingInputPicker() throws {
+        if ownsRecordingInputPreference || preferredRecordingInputUID != nil {
+            try AVAudioSession.sharedInstance().setPreferredInput(nil)
+        }
+        ownsRecordingInputPreference = false
+        preferredRecordingInputUID = nil
+        requestedRecordingInput = nil
+        recordingInputWarning = nil
+    }
+
     private func selectRecordingInput(_ session: AVAudioSession, retryAfterPreparation: Bool = false) throws {
         let inputs = session.availableInputs ?? []
         DeviceDiagnostics.shared.log("Audio inputs available=" + inputs.map { "\($0.portName) [\($0.portType.rawValue)] uid=\($0.uid)" }.joined(separator: "; "))
@@ -99,7 +112,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             requestedRecordingInput = nil
             recordingInputWarning = nil
             recordingInputSelectionError = nil
-            if session.preferredInput != nil { try session.setPreferredInput(nil) }
+            if ownsRecordingInputPreference {
+                try session.setPreferredInput(nil)
+                ownsRecordingInputPreference = false
+            }
             DeviceDiagnostics.shared.log("Audio input mode=跟随系统 actual=\(session.currentRoute.inputs.map { $0.portName })")
             return
         }
@@ -112,6 +128,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         requestedRecordingInput = preferred
         if session.preferredInput?.uid != preferred.uid || (retryAfterPreparation && !session.currentRoute.inputs.contains(where: { $0.uid == preferred.uid })) {
             try session.setPreferredInput(preferred)
+            ownsRecordingInputPreference = true
         }
         DeviceDiagnostics.shared.log("Audio input requested=\(preferred.portName) actual=\(session.currentRoute.inputs.map { $0.portName })")
     }
@@ -660,7 +677,6 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         if shortcutRecording {
             silentPlayer?.stop()
             silentPlayer = nil
-            try? AVAudioSession.sharedInstance().setPreferredInput(nil)
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             shortcutRecording = false
         } else if isListening && !isSystemInterrupted {

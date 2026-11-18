@@ -1,6 +1,7 @@
 import UIKit
 import CoreBluetooth
 import AVFoundation
+import AVKit
 
 // 仅记录设备和录音状态，不记录 Cookie、音频或会话内容。
 final class DeviceDiagnostics {
@@ -541,6 +542,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     private let trialLabel = UILabel()
     private var lastTrialPhase = -1
     private var refreshTimer: Timer?
+    private let microphoneButton = UIButton(type: .system)
+    private var inputPicker: AnyObject?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -592,7 +595,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let launchPath = UIButton(type: .system)
         launchPath.setTitle("启动对照：切换立即请求／先鉴权", for: .normal)
         launchPath.addTarget(self, action: #selector(toggleLaunchPath), for: .touchUpInside)
-        let microphone = UIButton(type: .system)
+        let microphone = microphoneButton
         microphone.setTitle("选择录音麦克风", for: .normal)
         microphone.addTarget(self, action: #selector(chooseMicrophone), for: .touchUpInside)
         let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, launchPath] : []) + [help, trialLabel, recordButton, table, logView])
@@ -667,6 +670,29 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
     }
     @objc private func chooseMicrophone() {
         let session = AVAudioSession.sharedInstance()
+        if #available(iOS 26.0, *) {
+            guard WearableService.shared.isRecording else {
+                let alert = UIAlertController(title: "先开始一段录音", message: "开始录音后，再点这里打开 iPhone 系统麦克风选择器。选择后请确认页面的实际录音输入，再测试下一次锁屏录音。", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "知道了", style: .default))
+                present(alert, animated: true)
+                return
+            }
+            do { try WearableService.shared.useSystemRecordingInputPicker() }
+            catch {
+                DeviceDiagnostics.shared.log("Audio input picker release preference failed: \(error.localizedDescription)")
+                return
+            }
+            let picker: AVInputPickerInteraction
+            if let existing = inputPicker as? AVInputPickerInteraction { picker = existing }
+            else {
+                picker = AVInputPickerInteraction()
+                microphoneButton.addInteraction(picker)
+                inputPicker = picker
+            }
+            DeviceDiagnostics.shared.log("Audio input native picker presented actual=\(session.currentRoute.inputs.map { $0.portName })")
+            picker.present()
+            return
+        }
         let choices = UIAlertController(title: "录音麦克风", message: "默认跟随 iPhone 的系统输入；也可指定下面任意麦克风，对下一段生效。以实际输入为准；指定设备不可用时会提示，不自动替换。", preferredStyle: .actionSheet)
         choices.addAction(UIAlertAction(title: "跟随系统" + (WearableService.shared.preferredRecordingInputUID == nil ? "（已选）" : ""), style: .default) { _ in
             WearableService.shared.preferredRecordingInputUID = nil

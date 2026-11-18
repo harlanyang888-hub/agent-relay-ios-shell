@@ -509,8 +509,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
             if BLERecoveryLab.enabled {
-                do { try audioSession.setPreferredInput(nil) }
-                catch { self.log("清除输入偏好失败：\(error.localizedDescription)") }
+                // Deactivation releases audio; keep the user's system input selection.
                 DeviceDiagnostics.shared.log("LAB 音频停用诊断 recording=\(WearableService.shared.isRecording) player=\(self.player?.isPlaying ?? false) paused=\(self.paused) otherAudio=\(audioSession.isOtherAudioPlaying) mode=\(audioSession.mode.rawValue) inputs=\(audioSession.currentRoute.inputs.map { $0.portName }) outputs=\(audioSession.currentRoute.outputs.map { $0.portName })")
             }
             self.log("系统已停用音频会话；待验证其他 App 能否正常用麦")
