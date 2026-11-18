@@ -96,7 +96,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // Foreground-only diagnostic using ordinary app activation, not an LCK call.
     // It owns a separate local file and never enters the watch draft/outbox.
-    public func startInputComparison() {
+    public enum InputComparisonProfile: String {
+        case baseline, hfpOnly, inputOnly
+    }
+    public func startInputComparison(profile: InputComparisonProfile = .baseline) {
         guard UIApplication.shared.applicationState == .active,
               !inputComparisonActive, !isRecording, !isListening, !isPlayingAudio else { return }
         if #available(iOS 17.4, *), !VoiceConversationProbe.shared.canChangeLaunchPath { return }
@@ -114,8 +117,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             catch { DeviceDiagnostics.shared.log("MIC COMPARE restore error=\(error.localizedDescription)") }
         }
         do {
-            try session.setCategory(.playAndRecord, mode: .default,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            let comparisonCategory: AVAudioSession.Category = profile == .inputOnly ? .record : .playAndRecord
+            let comparisonOptions: AVAudioSession.CategoryOptions = profile == .baseline
+                ? [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker] : [.allowBluetooth]
+            try session.setCategory(comparisonCategory, mode: .default, options: comparisonOptions)
             try session.setActive(true)
             try selectRecordingInput(session)
             let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -133,15 +138,15 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 self.stopInputComparison()
             }
             try capture.start()
-            logInputSession("foreground-comparison-start", session)
-            DeviceDiagnostics.shared.log("MIC COMPARE started; foreground/default-mode/no-LCK; five seconds; local file only")
+            logInputSession("foreground-\(profile.rawValue)-start", session)
+            DeviceDiagnostics.shared.log("MIC COMPARE started profile=\(profile.rawValue); foreground/default-mode/no-LCK; five seconds; local file only")
             var ticks = 0
             inputComparisonTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 guard let self = self, self.inputComparisonActive,
                       let capture = self.inputComparisonCapture else { return }
                 ticks += 1
                 if ticks <= 2 { try? self.selectRecordingInput(session, retryAfterPreparation: true) }
-                self.logInputSession("foreground-comparison-\(ticks)", session)
+                self.logInputSession("foreground-\(profile.rawValue)-\(ticks)", session)
                 DeviceDiagnostics.shared.log("MIC COMPARE captured=\(capture.currentTime) peakDB=\(capture.peakPower(forChannel: 0))")
                 if ticks >= 5 { self.stopInputComparison() }
                 self.notifyStatusChanged()

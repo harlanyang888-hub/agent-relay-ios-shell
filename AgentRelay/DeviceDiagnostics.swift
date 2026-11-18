@@ -734,7 +734,20 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
             present(alert, animated: true)
             return
         }
-        WearableService.shared.startInputComparison()
+        let choices = UIAlertController(title: "麦克风路由对照", message: "保持两台音频设备连接，每项测试五秒并自动结束，仅本地保存。“仅录音”会暂时停止其他声音，测试结束后释放音频。先测试仅录音，再测最小通话配置。", preferredStyle: .actionSheet)
+        choices.addAction(UIAlertAction(title: "仅录音（5秒）", style: .default) { _ in
+            WearableService.shared.startInputComparison(profile: .inputOnly)
+        })
+        choices.addAction(UIAlertAction(title: "最小通话配置（5秒）", style: .default) { _ in
+            WearableService.shared.startInputComparison(profile: .hfpOnly)
+        })
+        choices.addAction(UIAlertAction(title: "原配置（5秒）", style: .default) { _ in
+            WearableService.shared.startInputComparison(profile: .baseline)
+        })
+        choices.addAction(UIAlertAction(title: "取消", style: .cancel))
+        choices.popoverPresentationController?.sourceView = view
+        choices.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        present(choices, animated: true)
     }
     @objc private func toggleLaunchPath() {
         if #available(iOS 17.4, *) {

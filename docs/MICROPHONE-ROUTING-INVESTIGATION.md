@@ -4,6 +4,10 @@ Status: not fixed; last physical-device reproduction is Agent Relay 1.0.43 (44),
 
 Additional user evidence: WeChat voice messages default to DJI while both audio devices are connected. This rules out a blanket claim that the device pair cannot coexist, but does not establish WeChat's private audio configuration or prove an identical LCK background capture path is supported.
 
+1.0.44 real-device result, 2026-11-18 07:24–07:26 UTC: the foreground/default-mode/no-LCK comparison also failed twice. Both inputs were available, preferredInput returned the DJI UID, and actual input/output remained Baseus throughout both five-second captures. LCK activation logged callbackIsShared=true, ruling out distinct callback/shared AVAudioSession objects for this reproduction. Neither switching capture backend, changing request timing, nor using the callback session has fixed routing. These failures still share category playAndRecord and options=44.
+
+1.0.45 adds diagnostic-only profiles; the normal watch call configuration is unchanged. Baseline is playAndRecord/default/options44; hfpOnly is playAndRecord/default/options4; inputOnly is record/default/options4. Each runs for five seconds, stops on loss of foreground, restores the previous category, and writes only a separate local file. Record category suppresses playback during the test. A successful inputOnly result must not be extrapolated to LCK background activation without another real-device test. These are controlled comparisons, not a declared fix or a reconstruction of WeChat's undocumented implementation.
+
 1.0.44 diagnostic comparison: use the session supplied by LCK didActivate for routing and log its identity against sharedInstance. Add a five-second foreground/default-mode/no-LCK capture using the same PCM writer and the user's saved UID. The comparison writes a separate local file, does not create/send an Agent message, refuses overlap with a system call, and stops on loss of foreground. Compare this against the regular watch/LCK path. This is a diagnostic tool, not a replacement for unattended lock-screen operation.
 
 ## Required behavior
