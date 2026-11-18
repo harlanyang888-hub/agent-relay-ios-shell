@@ -8,7 +8,8 @@ void watch_init(watch_state *s, uint32_t nonce) { memset(s,0,sizeof(*s)); s->non
 void watch_disconnected(watch_state *s) { s->ready=false; s->pending=false; }
 bool watch_request(watch_state *s, enum watch_action action, uint64_t now) {
     if (s->pending || action>WATCH_END || (action!=WATCH_SYNC && !s->ready)) return false;
-    if (action!=WATCH_SYNC && (now-s->synchronized_ms>15000 || s->capture==WATCH_STARTING || s->capture==WATCH_FINALIZING)) {
+    if (action!=WATCH_SYNC && (now-s->synchronized_ms>15000 ||
+        (action!=WATCH_END && (s->capture==WATCH_STARTING || s->capture==WATCH_FINALIZING)))) {
         s->ready=false; return false;
     }
     if (++s->sequence==0) { s->sequence=1; ++s->nonce; if (!s->nonce) ++s->nonce; }

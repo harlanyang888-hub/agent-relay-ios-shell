@@ -99,6 +99,20 @@ func command(_ sequence: UInt32, seconds: Double = 8) -> BLELabCommand {
     let service = WearableService.shared
     let voice = VoiceConversationProbe.shared
     let watch = WatchVoiceSession(storageRoot: root)
+    var responses: [Data] = []
+    var wireSequence: UInt16 = 0
+    func wire(_ controller: WatchVoiceSession, _ action: WatchRequest.Action) {
+        controller.send = { responses.append($0) }
+        wireSequence += 1
+        var sync = Data([65,82,3,0]); sync.watchAppend(UInt32(424242)); sync.watchAppend(wireSequence)
+        sync.watchAppend(UInt32(0)); sync.watchAppend(UInt16(0)); sync.watchAppend(UInt32(0))
+        controller.receive(sync)
+        let state = responses.last!
+        wireSequence += 1
+        var packet = Data([65,82,3,action.rawValue]); packet.watchAppend(UInt32(424242)); packet.watchAppend(wireSequence)
+        packet.watchAppend(state.watchUInt32(6)); packet.watchAppend(state.watchUInt16(10)); packet.watchAppend(state.watchUInt32(12) + 8)
+        controller.receive(packet)
+    }
     service.captureDirectory = root.appendingPathComponent("Recordings")
     service.authCookie = nil
     let destination: [String:String] = ["hostId":"original", "project":"first"]
@@ -140,6 +154,15 @@ func command(_ sequence: UInt32, seconds: Double = 8) -> BLELabCommand {
     watch.phoneEnd(); await settle()
     check(journal()["session"] == nil, "End with no recording did not close logical context")
 
+    // PWR must cancel a start that has not acquired audio, instead of just
+    // returning busy forever. A late activation must not reopen the microphone.
+    watch.phoneStart(); await settle(0.4)
+    let cancelled = ConversationManager.instances.last!
+    wire(watch, .end); await settle(0.4)
+    cancelled.activate(); await settle()
+    check(!watch.hasDraft && !service.isRecording && journal()["session"] == nil, "PWR during startup did not cancel cleanly")
+    check(responses.last?[3] == WatchReply.Result.applied.rawValue, "PWR cancel did not receive terminal confirmation")
+
     // Early failed/empty recording must not trap every later long press in send.
     service.startFails = true
     watch.phoneStart()
@@ -169,6 +192,7 @@ func command(_ sequence: UInt32, seconds: Double = 8) -> BLELabCommand {
     let barrier = DispatchSemaphore(value: 0)
     MediaSDK.mergeBarrier = barrier
     recovered.phoneSend(); await settle()
+    wire(recovered, .end)
     voice.end(); await settle()
     MediaSDK.mergeBarrier = nil; barrier.signal()
     await release(fourth); await settle(0.5)
@@ -176,6 +200,7 @@ func command(_ sequence: UInt32, seconds: Double = 8) -> BLELabCommand {
     check(deliveries.count == 2 && saved["session"] == nil, "Hang-up during merge lost message or retained closed context")
     check(deliveries[1]["session"] as! String != originalSession, "Explicit end did not create new context next time")
     check(deliveries.allSatisfy { $0["state"] as? String == "pending" }, "Offline files did not remain pending")
+    check(responses.last?[3] == WatchReply.Result.applied.rawValue, "PWR during save did not receive terminal confirmation")
 
     // A merge error preserves source segments, then succeeds once when retried.
     recovered.phoneStart()

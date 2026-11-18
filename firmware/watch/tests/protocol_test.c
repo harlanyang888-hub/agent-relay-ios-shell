@@ -36,5 +36,13 @@ int main(void) {
  assert(!watch_request(&s,WATCH_END,25002)); // Fresh snapshot required after idle.
  assert(watch_request(&s,WATCH_SYNC,25003));snapshot(&s,p,WATCH_SNAPSHOT,WATCH_IDLE);watch_accept(&s,p,20,25004);
  watch_disconnected(&s);assert(!s.pending && !s.ready);assert(!watch_request(&s,WATCH_END,25005));
+ // END remains available to cancel an opening call or finish a saving message.
+ assert(watch_request(&s,WATCH_SYNC,26000));snapshot(&s,p,WATCH_SNAPSHOT,WATCH_STARTING);watch_accept(&s,p,20,26001);
+ assert(!watch_request(&s,WATCH_BOOT_LONG,26002));
+ assert(watch_request(&s,WATCH_SYNC,26003));snapshot(&s,p,WATCH_SNAPSHOT,WATCH_STARTING);watch_accept(&s,p,20,26004);
+ assert(watch_request(&s,WATCH_END,26005));
+ snapshot(&s,p,WATCH_APPLIED,WATCH_IDLE);assert(watch_accept(&s,p,20,26006)==1);
+ assert(watch_request(&s,WATCH_SYNC,27000));snapshot(&s,p,WATCH_SNAPSHOT,WATCH_FINALIZING);watch_accept(&s,p,20,27001);
+ assert(watch_request(&s,WATCH_END,27002));
  puts("watch protocol tests passed");
 }

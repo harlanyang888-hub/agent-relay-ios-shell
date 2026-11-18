@@ -229,7 +229,15 @@ void app_main(void) {
             enum watch_action action=p==2 ? WATCH_END : b==2 ? WATCH_BOOT_LONG : WATCH_BOOT_SHORT;
             ESP_LOGI(TAG,"button=%s gesture=%s encrypted=%d subscribed=%d ready=%d",
                 p==2 ? "PWR" : "BOOT",p==2 || b==2 ? "long" : "short",secure,subscribed,state.ready);
-            if(!secure || !subscribed || deferred_gesture>=0 || (state.pending && state.packet[3]!=WATCH_SYNC)) pulse(3,40);
+            if(action==WATCH_END && secure && subscribed &&
+               (!state.pending || state.packet[3]!=WATCH_END)) {
+                // Ending is an explicit cancellation intent, including while a
+                // start/save is in flight. Stop retransmitting the old gesture
+                // and obtain a fresh phone state before sending END.
+                watch_disconnected(&state);
+                deferred_gesture=WATCH_END;gesture_deadline=now+5000;sync_at=0;
+            }
+            else if(!secure || !subscribed || deferred_gesture>=0 || (state.pending && state.packet[3]!=WATCH_SYNC)) pulse(3,40);
             else {
                 // Every gesture gets a fresh phone snapshot, including phone-side UI changes.
                 // Only this one live gesture may wait; there is no historical FIFO.

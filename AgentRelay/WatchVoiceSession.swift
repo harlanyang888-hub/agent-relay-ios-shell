@@ -43,6 +43,7 @@ final class WatchVoiceSession {
     private var starting = false
     private var finalizing = false
     private var endAfterFinalizing = false
+    private var endAfterSaveRequest: WatchRequest?
     private var uploading = false
     private var uploadTask: UIBackgroundTaskIdentifier = .invalid
     private var retryWork: DispatchWorkItem?
@@ -217,6 +218,25 @@ final class WatchVoiceSession {
         if let result = receipts.result(for: request) {
             reply(request, result.0 ? .applied : .rejected, error: result.1); return
         }
+        var endSupersedesPending = false
+        if request.action == .end, let old = pending, old.action != .end {
+            updateRevision()
+            guard storageReady, request.isFresh(), request.epoch == epoch, request.revision == revision else {
+                reply(request, .rejected, error: storageReady ? 3 : 8); return
+            }
+            if finalizing {
+                endAfterFinalizing = true
+                endAfterSaveRequest = request
+                pending = request
+                reply(request, .received)
+                return
+            }
+            if starting { VoiceConversationProbe.shared.cancelPendingStart() }
+            // The old pause/close acknowledgement may still finish later. Its
+            // captured request cannot clear this new end request.
+            pending = nil
+            endSupersedesPending = true
+        }
         if let old = pending {
             if old.packet != request.packet { receipts.record(request, succeeded: false, error: 4) }
             reply(request, old.packet == request.packet ? .received : .rejected, error: old.packet == request.packet ? 0 : 4)
@@ -228,7 +248,7 @@ final class WatchVoiceSession {
         }
         updateRevision()
         guard storageReady, request.isFresh(),
-              request.epoch == epoch, request.revision == revision,
+              request.epoch == epoch, (request.revision == revision || endSupersedesPending),
               !starting, !finalizing else {
             log("动作拒绝：storage=\(storageReady) fresh=\(request.isFresh()) epoch=\(request.epoch == epoch) revision=\(request.revision)/\(revision)")
             finish(request, succeeded: false, error: storageReady ? 3 : 8); return
@@ -411,12 +431,21 @@ final class WatchVoiceSession {
                     self.endAfterFinalizing = false
                     self.log("单条录音已持久保存 duration=\(duration)；等待服务器确认")
                     completion(true)
+                    if let end = self.endAfterSaveRequest {
+                        self.endAfterSaveRequest = nil
+                        VoiceConversationProbe.shared.endSystemConversationKeepingWatchDraft()
+                        self.confirmEnded(end)
+                    }
                     self.flushDeliveries()
                 } catch {
                     self.endAfterFinalizing = false
                     self.lastError = error.localizedDescription
                     self.log("合并失败，原始段已保留，结束操作尚未完成：\(error)")
                     completion(false)
+                    if let end = self.endAfterSaveRequest {
+                        self.endAfterSaveRequest = nil
+                        self.finish(end, succeeded: false, error: 8)
+                    }
                     self.drainPhoneEnd()
                 }
             }
