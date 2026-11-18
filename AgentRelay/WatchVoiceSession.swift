@@ -153,6 +153,10 @@ final class WatchVoiceSession {
             reply(request, old.packet == request.packet ? .received : .rejected, error: old.packet == request.packet ? 0 : 4)
             return
         }
+        guard !WearableService.shared.inputComparisonActive else {
+            finish(request, succeeded: false, error: 4)
+            return
+        }
         updateRevision()
         guard storageReady, request.isFresh(),
               request.epoch == epoch, request.revision == revision,

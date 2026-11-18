@@ -61,18 +61,115 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     public private(set) var isRecording = false
     public private(set) var recordingStatus = "就绪"
     public var capturedRecordingDuration: TimeInterval { audioRecorder?.currentTime ?? 0 }
+    private var activatedCommunicationSession: AVAudioSession?
+    public var recordingAudioSession: AVAudioSession {
+        (communicationMode ? activatedCommunicationSession : nil) ?? AVAudioSession.sharedInstance()
+    }
     public var recordingInputName: String {
-        AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portName }.joined(separator: "、")
+        recordingAudioSession.currentRoute.inputs.map { $0.portName }.joined(separator: "、")
     }
     private var shortcutRecording = false
     private var shortcutDestination: [String: String] = [:]
     // 系统语音会话测试：激活/停用交由 LiveCommunicationKit 管理。
     public private(set) var communicationMode = false
     public var communicationButtonHandler: ((String) -> Void)?
-    public func communicationAudioDidActivate() {
+    public func communicationAudioDidActivate(_ session: AVAudioSession) {
         guard communicationMode else { return }
+        activatedCommunicationSession = session
+        let shared = AVAudioSession.sharedInstance()
+        DeviceDiagnostics.shared.log("Audio session binding callbackIsShared=\(session === shared) callbackInput=\(session.currentRoute.inputs.map { $0.portName }) sharedInput=\(shared.currentRoute.inputs.map { $0.portName })")
+        logInputSession("LCK-activated", session)
         isSystemInterrupted = false
         interruptedDate = nil
+    }
+    public func communicationAudioDidDeactivate(_ session: AVAudioSession) {
+        if activatedCommunicationSession === session { activatedCommunicationSession = nil }
+    }
+    private func logInputSession(_ stage: String, _ session: AVAudioSession) {
+        DeviceDiagnostics.shared.log("Audio session stage=\(stage) category=\(session.category.rawValue) mode=\(session.mode.rawValue) options=\(session.categoryOptions.rawValue) preferred=\(session.preferredInput?.uid ?? "nil") inputs=\(session.currentRoute.inputs.map { $0.uid }) outputs=\(session.currentRoute.outputs.map { $0.uid })")
+    }
+    public private(set) var inputComparisonActive = false
+    private var inputComparisonCapture: SystemAudioCapture?
+    private var inputComparisonTimer: Timer?
+    private var inputComparisonRestore: (() -> Void)?
+    private var inputComparisonFile: URL?
+
+    // Foreground-only diagnostic using ordinary app activation, not an LCK call.
+    // It owns a separate local file and never enters the watch draft/outbox.
+    public func startInputComparison() {
+        guard UIApplication.shared.applicationState == .active,
+              !inputComparisonActive, !isRecording, !isListening, !isPlayingAudio else { return }
+        if #available(iOS 17.4, *), !VoiceConversationProbe.shared.canChangeLaunchPath { return }
+        let session = AVAudioSession.sharedInstance()
+        guard session.recordPermission == .granted else {
+            DeviceDiagnostics.shared.log("MIC COMPARE 需要先授权麦克风")
+            return
+        }
+        let category = session.category, mode = session.mode, options = session.categoryOptions
+        inputComparisonActive = true
+        inputComparisonRestore = {
+            do { try session.setActive(false, options: .notifyOthersOnDeactivation) }
+            catch { DeviceDiagnostics.shared.log("MIC COMPARE release error=\(error.localizedDescription)") }
+            do { try session.setCategory(category, mode: mode, options: options) }
+            catch { DeviceDiagnostics.shared.log("MIC COMPARE restore error=\(error.localizedDescription)") }
+        }
+        do {
+            try session.setCategory(.playAndRecord, mode: .default,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setActive(true)
+            try selectRecordingInput(session)
+            let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Recordings", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+            let url = folder.appendingPathComponent("mic_comparison_\(UUID().uuidString).m4a")
+            inputComparisonFile = url
+            let capture = try SystemAudioCapture(url: url)
+            inputComparisonCapture = capture
+            capture.onFailure = { [weak self, weak capture] error in
+                guard let self = self, let capture = capture,
+                      self.inputComparisonCapture === capture else { return }
+                DeviceDiagnostics.shared.log("MIC COMPARE capture failed=\(error.localizedDescription)")
+                self.stopInputComparison()
+            }
+            try capture.start()
+            logInputSession("foreground-comparison-start", session)
+            DeviceDiagnostics.shared.log("MIC COMPARE started; foreground/default-mode/no-LCK; five seconds; local file only")
+            var ticks = 0
+            inputComparisonTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                guard let self = self, self.inputComparisonActive,
+                      let capture = self.inputComparisonCapture else { return }
+                ticks += 1
+                if ticks <= 2 { try? self.selectRecordingInput(session, retryAfterPreparation: true) }
+                self.logInputSession("foreground-comparison-\(ticks)", session)
+                DeviceDiagnostics.shared.log("MIC COMPARE captured=\(capture.currentTime) peakDB=\(capture.peakPower(forChannel: 0))")
+                if ticks >= 5 { self.stopInputComparison() }
+                self.notifyStatusChanged()
+            }
+        } catch {
+            DeviceDiagnostics.shared.log("MIC COMPARE failed=\(error.localizedDescription)")
+            stopInputComparison()
+        }
+        notifyStatusChanged()
+    }
+
+    @objc public func stopInputComparison() {
+        guard inputComparisonActive else { return }
+        inputComparisonActive = false
+        inputComparisonTimer?.invalidate()
+        inputComparisonTimer = nil
+        let capture = inputComparisonCapture
+        inputComparisonCapture = nil
+        capture?.stop()
+        logInputSession("foreground-comparison-end", AVAudioSession.sharedInstance())
+        if let url = inputComparisonFile, let file = try? AVAudioFile(forReading: url) {
+            DeviceDiagnostics.shared.log("MIC COMPARE finished duration=\(Double(file.length) / file.processingFormat.sampleRate) file=\(url.lastPathComponent); 本地保存，未上传")
+        }
+        inputComparisonFile = nil
+        let restore = inputComparisonRestore
+        inputComparisonRestore = nil
+        restore?()
+        notifyStatusChanged()
     }
     public var communicationConversationId: String?
     public private(set) var lastVoiceSubmissionQueued = false
@@ -97,7 +194,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // Release only overrides issued by this app; the system picker owns its selection.
     public func useSystemRecordingInputPicker() throws {
         if ownsRecordingInputPreference || preferredRecordingInputUID != nil {
-            try AVAudioSession.sharedInstance().setPreferredInput(nil)
+            try recordingAudioSession.setPreferredInput(nil)
         }
         ownsRecordingInputPreference = false
         preferredRecordingInputUID = nil
@@ -131,9 +228,10 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             ownsRecordingInputPreference = true
         }
         DeviceDiagnostics.shared.log("Audio input requested=\(preferred.portName) actual=\(session.currentRoute.inputs.map { $0.portName })")
+        logInputSession("preferred-input-request", session)
     }
     private func updateRecordingInputWarning() {
-        let actual = AVAudioSession.sharedInstance().currentRoute.inputs
+        let actual = recordingAudioSession.currentRoute.inputs
         let warning: String?
         if let desired = requestedRecordingInput, !actual.contains(where: { $0.uid == desired.uid }) {
             warning = "未切换到\(desired.portName)；实际输入：\(actual.map { $0.portName }.joined(separator: "、"))"
@@ -186,6 +284,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
         updateAudioRouteInfo()
 
         // 监听系统音频路由变更通知（蓝牙连接/断开）
+        NotificationCenter.default.addObserver(self, selector: #selector(stopInputComparison),
+            name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAudioRouteChange),
@@ -215,7 +315,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     // 耳机按键 POC 使用手机输入；快捷录音允许外接麦克风。
     @discardableResult
     private func setupAudioSession(forRecording: Bool) -> Bool {
-        let session = AVAudioSession.sharedInstance()
+        let session = recordingAudioSession
         do {
             if communicationMode {
                 if forRecording { try selectRecordingInput(session) }
@@ -252,7 +352,8 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             guard let self = self else { return }
             self.updateAudioRouteInfo()
             let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
-            DeviceDiagnostics.shared.log("Audio route reason=\(reason) input=\(AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portName }) recording=\(self.isRecording)")
+            DeviceDiagnostics.shared.log("Audio route reason=\(reason) input=\(self.recordingAudioSession.currentRoute.inputs.map { $0.portName }) recording=\(self.isRecording)")
+            self.logInputSession("route-notification-\(reason)", self.recordingAudioSession)
             self.notifyStatusChanged()
             if self.isRecording { self.updateRecordingInputWarning() }
             // 核心修复：路由变更绝不可盲目重启播放器，杜绝微信点开麦克风时被静音播放器顶掉的问题！
@@ -281,6 +382,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             if isRecording {
                 failActiveRecording(message: "录音被系统中断，未发送，请重新录音")
             }
+            if inputComparisonActive { stopInputComparison() }
         } else if type == .ended {
             let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let shouldResume = AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
@@ -426,6 +528,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
 
     // MARK: - 监听启动与停止
     public func startListening() {
+        guard !inputComparisonActive else { return }
         guard !communicationMode else { return }
         guard !shortcutRecording else { return }
         guard !isListening else { return }
@@ -658,9 +761,11 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
         communicationMode = false
+        activatedCommunicationSession = nil
     }
 
     public func startShortcutRecording(context: [String: String] = [:]) {
+        guard !inputComparisonActive else { return }
         guard !isRecording else { return }
         // 快捷录音不启动耳机静音保活，停止后释放音频会话。
         stopListening()
@@ -685,6 +790,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
     }
 
     public func startRecording() {
+        guard !inputComparisonActive else { return }
         guard !isRecording else { return }
         if !shortcutRecording { shortcutDestination = [:] }
         guard !isSystemInterrupted else {
@@ -694,7 +800,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
+        let session = recordingAudioSession
         guard session.recordPermission == .granted else {
             if session.recordPermission == .undetermined,
                UIApplication.shared.applicationState == .active {
@@ -843,7 +949,7 @@ public final class WearableService: NSObject, AVAudioRecorderDelegate, AVAudioPl
                 guard let self = self, let recorder = recorder,
                       self.audioRecorder === recorder, self.isRecording, recorder.isRecording,
                       self.preferredRecordingInputUID == selectedUID else { return }
-                let session = AVAudioSession.sharedInstance()
+                let session = self.recordingAudioSession
                 let matches = session.currentRoute.inputs.contains { $0.uid == selectedUID }
                 if !matches {
                     do { try self.selectRecordingInput(session, retryAfterPreparation: true) }

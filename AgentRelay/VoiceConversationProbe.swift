@@ -101,6 +101,11 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
     func connect() {
         guard !opening, callUUID == nil else { return }
         let service = WearableService.shared
+        guard !service.inputComparisonActive else {
+            log("请先结束五秒麦克风对照")
+            finishLabCommand(false, "麦克风对照测试中")
+            return
+        }
         guard !service.isRecording else { log("请先结束当前录音"); return }
         let audio = AVAudioSession.sharedInstance()
         guard audio.recordPermission == .granted else {
@@ -490,7 +495,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             self.audioActive = true
             self.audioReleaseConfirmed = false
             self.paused = false
-            WearableService.shared.communicationAudioDidActivate()
+            WearableService.shared.communicationAudioDidActivate(audioSession)
             self.log("系统已启用音频会话")
             self.beginRecordingIfNeeded()
             self.playPendingReply()
@@ -508,6 +513,7 @@ final class VoiceConversationProbe: NSObject, ConversationManagerDelegate, AVAud
             self.audioReleaseConfirmed = true
             WearableService.shared.refreshCommunicationMediaState(active: false)
             if WearableService.shared.isRecording { WearableService.shared.stopRecording(shouldProcess: false) }
+            WearableService.shared.communicationAudioDidDeactivate(audioSession)
             if BLERecoveryLab.enabled {
                 // Deactivation releases audio; keep the user's system input selection.
                 DeviceDiagnostics.shared.log("LAB 音频停用诊断 recording=\(WearableService.shared.isRecording) player=\(self.player?.isPlaying ?? false) paused=\(self.paused) otherAudio=\(audioSession.isOtherAudioPlaying) mode=\(audioSession.mode.rawValue) inputs=\(audioSession.currentRoute.inputs.map { $0.portName }) outputs=\(audioSession.currentRoute.outputs.map { $0.portName })")

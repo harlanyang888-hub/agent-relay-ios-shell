@@ -102,6 +102,7 @@ final class SystemAudioCapture: RelayAudioCapture {
     private var tapInstalled = false
     private var configurationObserver: NSObjectProtocol?
     private var routeRestarts = 0
+    private var lastRouteRestartAt: TimeInterval = 0
     var onFailure: ((Error) -> Void)?
     var onConfigurationChange: (() -> Void)?
 
@@ -146,6 +147,9 @@ final class SystemAudioCapture: RelayAudioCapture {
         guard isRecording else { return }
         // A hardware-rate change invalidates the engine graph. Restart only this
         // still-active capture, without changing the call or opening a new file.
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastRouteRestartAt > 3 { routeRestarts = 0 }
+        lastRouteRestartAt = now
         routeRestarts += 1
         guard routeRestarts <= 8 else {
             onFailure?(SystemAudioPCMWriter.Failure.format)

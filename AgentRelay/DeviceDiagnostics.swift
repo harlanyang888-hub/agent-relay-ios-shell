@@ -598,7 +598,10 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         let microphone = microphoneButton
         microphone.setTitle("选择录音麦克风", for: .normal)
         microphone.addTarget(self, action: #selector(chooseMicrophone), for: .touchUpInside)
-        let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, launchPath] : []) + [help, trialLabel, recordButton, table, logView])
+        let comparison = UIButton(type: .system)
+        comparison.setTitle("前台麦克风对照（5 秒）", for: .normal)
+        comparison.addTarget(self, action: #selector(compareMicrophone), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [controls, microphone] + (BLERecoveryLab.enabled ? [linkTest, launchPath, comparison] : []) + [help, trialLabel, recordButton, table, logView])
         stack.axis = .vertical
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -635,6 +638,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
                 ? "跟随系统" : (WearableService.shared.preferredRecordingInputName ?? "指定麦克风")
             trialLabel.text! += "\n麦克风设置：\(inputMode)"
             trialLabel.text! += "\n实际录音输入：\(input.isEmpty ? "尚未启用" : input)"
+            if WearableService.shared.inputComparisonActive { trialLabel.text! += "\n正在进行五秒前台麦克风对照" }
             if let error = WearableService.shared.recordingInputSelectionError { trialLabel.text! += "\n⚠️ \(error)" }
             if WearableService.shared.isRecording, let warning = WearableService.shared.recordingInputWarning {
                 trialLabel.text! += "\n⚠️ \(warning)"
@@ -669,7 +673,8 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         present(choices, animated: true)
     }
     @objc private func chooseMicrophone() {
-        let session = AVAudioSession.sharedInstance()
+        guard !WearableService.shared.inputComparisonActive else { return }
+        let session = WearableService.shared.recordingAudioSession
         if #available(iOS 26.0, *) {
             do {
                 // Configure the same input-capable category used by watch calls.
@@ -689,9 +694,10 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
                 return
             }
             let picker: AVInputPickerInteraction
-            if let existing = inputPicker as? AVInputPickerInteraction { picker = existing }
+            if let existing = inputPicker as? AVInputPickerInteraction, existing.audioSession === session { picker = existing }
             else {
-                picker = AVInputPickerInteraction()
+                if let previous = inputPicker as? AVInputPickerInteraction { microphoneButton.removeInteraction(previous) }
+                picker = AVInputPickerInteraction(audioSession: session)
                 picker.delegate = self
                 microphoneButton.addInteraction(picker)
                 inputPicker = picker
@@ -719,6 +725,17 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         present(choices, animated: true)
     }
     @objc private func testLinkLoss() { BLEProbe.shared.simulateLinkLoss() }
+    @objc private func compareMicrophone() {
+        if WearableService.shared.inputComparisonActive { WearableService.shared.stopInputComparison(); return }
+        guard #available(iOS 17.4, *), VoiceConversationProbe.shared.canChangeLaunchPath,
+              !WearableService.shared.isListening else {
+            let alert = UIAlertController(title: "先结束当前录音和系统会话", message: "对照测试会录制五秒本地音频，不建立系统通话，也不发送给 Agent。请保持两台音频设备连接。", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "知道了", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        WearableService.shared.startInputComparison()
+    }
     @objc private func toggleLaunchPath() {
         if #available(iOS 17.4, *) {
             guard VoiceConversationProbe.shared.canChangeLaunchPath else {
@@ -766,6 +783,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         refresh()
     }
     @objc private func close() {
+        WearableService.shared.stopInputComparison()
         BLEButtonTrial.shared.finish(reason: "关闭测试页")
         BLEProbe.shared.stopScan()
         refreshTimer?.invalidate()
@@ -797,7 +815,7 @@ extension DeviceDiagnosticsViewController: AVInputPickerInteraction.Delegate {
             guard let self = self, self.view.window != nil,
                   self.presentedViewController == nil,
                   UIApplication.shared.applicationState == .active else { return }
-            let session = AVAudioSession.sharedInstance()
+            let session = inputPickerInteraction.audioSession
             guard let input = session.currentRoute.inputs.first else {
                 DeviceDiagnostics.shared.log("Audio input picker dismissed without active input; no preference saved")
                 return
