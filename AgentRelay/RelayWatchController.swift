@@ -10,11 +10,13 @@ final class RelayWatchController: UIViewController {
     override func loadView() { view = dashboard }
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "relay watch"
+        title = nil
         overrideUserInterfaceStyle = .dark
         view.backgroundColor = UIColor(red: 10/255, green: 11/255, blue: 13/255, alpha: 1)
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "电量记录", style: .plain, target: self, action: #selector(openBatteryHistory))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "xmark"), style: .plain, target: self, action: #selector(close))
+        navigationItem.rightBarButtonItem?.accessibilityLabel = "关闭"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "chart.xyaxis.line"), style: .plain, target: self, action: #selector(openBatteryHistory))
+        navigationItem.leftBarButtonItem?.accessibilityLabel = "电量记录"
         dashboard.onAction = { [weak self] action in self?.handle(action) }
         refresh()
     }
@@ -58,12 +60,18 @@ final class RelayWatchController: UIViewController {
         let seconds = max(0, Int(audio.capturedRecordingDuration))
         let time = recording ? String(format: "%02d:%02d", seconds / 60, seconds % 60) : "--:--"
         let detail = watch.lastError ?? ""
+        let batteryDetail: String
+        if let error = battery.refreshError { batteryDetail = error }
+        else if let sample = battery.sample {
+            let format = DateFormatter(); format.dateFormat = "HH:mm"
+            batteryDetail = "\(format.string(from: sample.receivedAt)) 更新"
+        } else { batteryDetail = "" }
         dashboard.configure(state: WatchDashboardViewState(
             deviceName: "relay watch", deviceSubtitle: nil,
             statusTitle: ready ? "已连接" : battery.connected ? "连接中" : "未连接",
             statusDetail: "",
             connectionState: ready ? .connected : battery.connected ? .connecting : .disconnected,
-            batteryText: battery.title, batteryDetail: battery.detail,
+            batteryText: battery.title, batteryDetail: batteryDetail,
             isCharging: battery.sample?.charging == true, batteryStatus: batteryStyle,
             recordingState: recording ? .recording : paused ? .pausedDraft : busy ? .transmitting : .idle,
             recordingTitle: title, recordingDetail: detail, recordingTime: time,
