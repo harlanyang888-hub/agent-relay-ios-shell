@@ -3,30 +3,43 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/watch-ask-v3]
-    paths: ['firmware/watch/main/**', 'firmware/watch/tests/**', 'firmware/watch/CMakeLists.txt', 'firmware/watch/sdkconfig.defaults', '.github/workflows/build-watch.yml']
+    paths: ['firmware/watch/main/**', 'firmware/watch/tests/**', 'firmware/watch/CMakeLists.txt', 'firmware/watch/sdkconfig.defaults', '.github/workflows/build-watch.yml', 'tools/verify_watch_power_build.py']
 jobs:
   firmware:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     container: espressif/idf:v5.5.1
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Test protocol failure recovery
         shell: bash
         run: |
           gcc -std=c11 -Wall -Wextra -Werror firmware/watch/main/watch_protocol.c firmware/watch/tests/protocol_test.c -Ifirmware/watch/main -o /tmp/protocol-test
           /tmp/protocol-test
-      - name: Build ESP32-S3
+      - name: Build stable baseline
+        shell: bash
+        run: |
+          mkdir -p /tmp/watch-power-baseline
+          git archive 13b851e24fb211744c41f0b2eb441f9f0ec209ae firmware/watch | tar -x -C /tmp/watch-power-baseline
+          . /opt/esp/idf/export.sh
+          cd /tmp/watch-power-baseline/firmware/watch
+          idf.py set-target esp32s3
+          idf.py -j 2 build
+      - name: Build DFS candidate
         shell: bash
         working-directory: firmware/watch
         run: |
           . /opt/esp/idf/export.sh
           idf.py set-target esp32s3
-          idf.py build
+          idf.py -j 2 build
+      - name: Verify protected configuration and package both images
+        shell: bash
+        run: |
+          python3 tools/verify_watch_power_build.py --baseline-project /tmp/watch-power-baseline/firmware/watch --output power-artifacts
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-relay-watch-development
-          path: |
-            firmware/watch/build/agent_relay_watch.bin
-            firmware/watch/build/bootloader/bootloader.bin
-            firmware/watch/build/partition_table/partition-table.bin
-            firmware/watch/build/flasher_args.json
+          name: agent-relay-watch-power-comparison
+          path: power-artifacts/
+          if-no-files-found: error
