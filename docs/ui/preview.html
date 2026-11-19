@@ -13,17 +13,17 @@
       --sub-card-bg-dark: #2c2c2e;
       --screen-bg-light: #f2f2f7;
       --screen-bg-dark: #000000;
-      
+
       --label-light: #000000;
       --label-dark: #ffffff;
       --secondary-label-light: #6c6c70;
       --secondary-label-dark: #8e8e93;
       --tertiary-label-light: #aeaeb2;
       --tertiary-label-dark: #48484a;
-      
+
       --separator-light: rgba(60, 60, 67, 0.18);
       --separator-dark: rgba(84, 84, 88, 0.35);
-      
+
       --system-blue: #007aff;
       --system-green: #34c759;
       --system-orange: #ff9500;
@@ -601,7 +601,7 @@
   <header>
     <h1>Agent Relay · 语音手表控制页面</h1>
     <p>正式、中文、原生 iPhone 风格的设备控制界面。支持暗色/浅色模式、动态字体、VoiceOver 与诚实电量呈现。</p>
-    
+
     <div class="toolbar">
       <button class="btn-scenario active" onclick="setScenario('idle')">1. 空闲待命 (正常)</button>
       <button class="btn-scenario" onclick="setScenario('recording')">2. 真实录音中 (00:24)</button>
@@ -616,7 +616,7 @@
   <!-- 手机机身模拟器 -->
   <div class="phone-wrapper">
     <div class="screen" id="phoneScreen">
-      
+
       <!-- 状态栏 -->
       <div class="status-bar">
         <span>09:41</span>
@@ -726,7 +726,7 @@
         <!-- 5. 次区域：对话控制区域 -->
         <div class="card">
           <div class="section-title text-secondary">对话控制</div>
-          
+
           <!-- 主操作按钮 (明确区分发送与结束) -->
           <button class="btn-primary" id="primaryBtn" onclick="handlePrimaryClick()">
             <svg id="primaryIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -1020,11 +1020,11 @@
       const rPill = document.getElementById('recordingPill');
       rPill.style.background = data.recordingPillBg;
       rPill.style.color = data.recordingPillColor;
-      
+
       const rTime = document.getElementById('recordingTime');
       rTime.textContent = data.recordingTime;
       rTime.className = 'recording-digits ' + (data.waveformActive ? 'text-primary' : 'text-secondary');
-      
+
       document.getElementById('recordingDetail').textContent = data.recordingDetail;
       const wave = document.getElementById('waveform');
       if (data.waveformActive) {

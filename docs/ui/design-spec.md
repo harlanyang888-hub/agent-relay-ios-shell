@@ -130,36 +130,36 @@
 public struct WatchDashboardViewState: Equatable {
     public var deviceName: String
     public var deviceSubtitle: String?
-    
+
     public var statusTitle: String
     public var statusDetail: String
     public var connectionState: ConnectionState
-    
+
     public var batteryText: String
     public var batteryDetail: String
     public var isCharging: Bool
     public var batteryStatus: BatteryStatus
-    
+
     public var recordingState: RecordingState
     public var recordingTitle: String
     public var recordingDetail: String
     public var recordingTime: String
     public var isRecording: Bool
     public var isPaused: Bool
-    
+
     public var pendingCount: Int
     public var pendingText: String
     public var pendingDetail: String?
-    
+
     public var primaryButton: ButtonConfig
     public var pauseResumeButton: ButtonConfig
     public var endConversationButton: ButtonConfig
     public var reconnectButton: ButtonConfig
     public var outboxButton: ButtonConfig
     public var diagnosticsButton: ButtonConfig
-    
+
     public var tipsText: String?
-    
+
     // 便捷字典映射供动态取用
     public var buttonTitles: [String: String]
     public var buttonEnabled: [String: Bool]
@@ -184,18 +184,18 @@ public enum WatchDashboardAction: Equatable {
 ```swift
 final class RelayWatchContainerViewController: UIViewController {
     private let dashboardView = WatchDashboardView()
-    
+
     override func loadView() {
         self.view = dashboardView
     }
-    
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "语音设备"
         setupDashboardBindings()
         observeBusinessState()
     }
-    
+
     private func setupDashboardBindings() {
         // 绑定语义动作到底层服务
         dashboardView.onAction = { [weak self] action in
@@ -216,17 +216,17 @@ final class RelayWatchContainerViewController: UIViewController {
             }
         }
     }
-    
+
     // 从业务层（WearableService / WatchVoiceSession / BLEProbe）组装 State
     private func refreshDashboard() {
         let isConnected = BLEProbe.shared.isConnected
         let isRecording = WearableService.shared.isRecording
         let isPaused = WatchVoiceSession.shared.isPausedDraft
         let pending = WatchVoiceSession.shared.recoveryItems.filter { $0.state == "pending" }.count
-        
+
         // 诚实电量计算
         let (batText, batDetail, batStatus, isCharging) = resolveHonestBattery(isConnected: isConnected)
-        
+
         let state = WatchDashboardViewState(
             deviceName: BLEProbe.shared.currentDeviceName ?? "Relay 语音手表",
             deviceSubtitle: "按键控制 · 手机录音",
@@ -259,10 +259,10 @@ final class RelayWatchContainerViewController: UIViewController {
                 isEnabled: isRecording || isPaused
             )
         )
-        
+
         dashboardView.configure(state: state)
     }
-    
+
     // 打开原有诊断入口
     private func handleOpenDiagnostics() {
         let diagVC = DeviceDiagnosticsViewController()
