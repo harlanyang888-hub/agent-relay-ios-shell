@@ -77,6 +77,14 @@ static int access_value(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctx
         uint8_t data[12];watch_battery_packet(data);
         return os_mbuf_append(ctxt->om,data,12)==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
+    if(arg==(void*)4 && ctxt->op==BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        uint8_t request[3];uint16_t length=0;
+        if(OS_MBUF_PKTLEN(ctxt->om)!=3 || ble_hs_mbuf_to_flat(ctxt->om,request,3,&length)!=0 || request[0]!=1)
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        uint16_t token=request[1]|((uint16_t)request[2]<<8);
+        if(!token) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        return watch_battery_request(token) ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
     return BLE_ATT_ERR_UNLIKELY;
 }
 static const struct ble_gatt_svc_def services[]={
@@ -86,7 +94,7 @@ static const struct ble_gatt_svc_def services[]={
         {.uuid=&state_uuid.u,.access_cb=access_value,.arg=(void*)2,.flags=BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC},
         {.uuid=&identity_uuid.u,.access_cb=access_value,.arg=(void*)3,.flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC},
         {.uuid=&battery_uuid.u,.access_cb=access_value,.arg=(void*)4,.val_handle=&battery_handle,
-         .flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_NOTIFY},
+         .flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_NOTIFY|BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC},
         {0}}}, {0}};
 
 static void enqueue(enum event_kind kind,uint16_t handle,bool enabled) {
@@ -156,10 +164,10 @@ static void synchronized(void) {
         ble_svc_gatt_changed(1,UINT16_MAX);
         nvs_handle_t store;
         if(nvs_open("relay_watch",NVS_READWRITE,&store)==ESP_OK) {
-            if(nvs_set_u32(store,"gatt_schema",2)==ESP_OK && nvs_commit(store)==ESP_OK) gatt_schema_changed=false;
+            if(nvs_set_u32(store,"gatt_schema",3)==ESP_OK && nvs_commit(store)==ESP_OK) gatt_schema_changed=false;
             nvs_close(store);
         }
-        ESP_LOGI(TAG,"GATT schema 2: service change queued for bonded phones");
+        ESP_LOGI(TAG,"GATT schema 3: service change queued for bonded phones");
     }
     // ESP32 factory public identity remains stable across normal resets and battery loss.
     int rc=ble_hs_util_ensure_addr(0);assert(rc==0);
@@ -193,7 +201,7 @@ void app_main(void) {
     if(rc==ESP_ERR_NVS_NOT_FOUND) {esp_fill_random(identity,16);identity[6]=(identity[6]&15)|64;identity[8]=(identity[8]&63)|128;ESP_ERROR_CHECK(nvs_set_blob(store,"identity",identity,16));ESP_ERROR_CHECK(nvs_commit(store));}
     else {ESP_ERROR_CHECK(rc);assert(length==16);}
     uint32_t schema=0;
-    gatt_schema_changed=nvs_get_u32(store,"gatt_schema",&schema)!=ESP_OK || schema!=2;
+    gatt_schema_changed=nvs_get_u32(store,"gatt_schema",&schema)!=ESP_OK || schema!=3;
     nvs_close(store);
     gpio_config_t buttons={.pin_bit_mask=1ULL<<0,.mode=GPIO_MODE_INPUT,.pull_up_en=GPIO_PULLUP_ENABLE};ESP_ERROR_CHECK(gpio_config(&buttons));
     gpio_config_t power_input={.pin_bit_mask=1ULL<<10,.mode=GPIO_MODE_INPUT,.pull_down_en=GPIO_PULLDOWN_ENABLE};ESP_ERROR_CHECK(gpio_config(&power_input));

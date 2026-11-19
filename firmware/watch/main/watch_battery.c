@@ -11,6 +11,17 @@ static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static uint8_t cached[12]={1,0,255,0,0,0,0,0,0,0,0,0};
 static uint16_t characteristic,connection=BLE_HS_CONN_HANDLE_NONE;
 static i2c_master_dev_handle_t pmic;
+static TaskHandle_t reader_task;
+static uint16_t requested_token;
+static bool refresh_pending;
+bool watch_battery_request(uint16_t token) {
+    portENTER_CRITICAL(&lock);
+    TaskHandle_t task=reader_task;
+    if(task) {requested_token=token;refresh_pending=true;}
+    portEXIT_CRITICAL(&lock);
+    if(task) xTaskNotifyGive(task);
+    return task!=NULL;
+}
 static bool read_reg(uint8_t reg,uint8_t *out,size_t n) {
     return i2c_master_transmit_receive(pmic,&reg,1,out,n,20)==ESP_OK;
 }
@@ -31,7 +42,13 @@ static void battery_task(void *arg) {
         rc=i2c_master_bus_add_device(bus,&device,&pmic);
     }
     // Read-only telemetry: never copy example charger/rail configuration.
+    int64_t last_sample=0;
     for(;;) {
+        portENTER_CRITICAL(&lock);
+        bool manual=refresh_pending;uint16_t token=manual ? requested_token : 0;refresh_pending=false;
+        portEXIT_CRITICAL(&lock);
+        int64_t now=esp_timer_get_time();
+        if(manual && last_sample && now-last_sample<1000000) vTaskDelay(pdMS_TO_TICKS((1000000-(now-last_sample))/1000+1));
         uint8_t packet[12]={1,0,255,0,0,0,0,0,0,0,0,0};
         uint8_t id=0,status[2]={0},percent=255,adc=0,voltage[2]={0};
         bool ok=rc==ESP_OK && read_reg(0x03,&id,1) && id==0x4a && read_reg(0x00,status,2);
@@ -50,17 +67,19 @@ static void battery_task(void *arg) {
         }
         uint32_t seconds=(uint32_t)(esp_timer_get_time()/1000000);
         for(unsigned i=0;i<4;i++) packet[6+i]=(uint8_t)(seconds>>(8*i));
+        packet[10]=(uint8_t)token;packet[11]=(uint8_t)(token>>8);
+        last_sample=esp_timer_get_time();
         portENTER_CRITICAL(&lock);memcpy(cached,packet,12);uint16_t handle=connection;portEXIT_CRITICAL(&lock);
         ESP_LOGI("relay-battery","valid=%d present=%d usb=%d charging=%d percent=%u millivolts=%u",
             !!(packet[1]&1),!!(packet[1]&2),!!(packet[1]&4),!!(packet[1]&8),packet[2],packet[4]|packet[5]<<8);
         struct ble_gap_conn_desc desc;
         if(handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(handle,&desc)==0 && desc.sec_state.encrypted)
             ble_gatts_chr_updated(characteristic);
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(60000));
     }
 }
 void watch_battery_start(uint16_t value_handle) {
     characteristic=value_handle;
-    if(xTaskCreate(battery_task,"battery-read",3072,NULL,1,NULL)!=pdPASS)
+    if(xTaskCreate(battery_task,"battery-read",3072,NULL,1,&reader_task)!=pdPASS)
         ESP_LOGW("relay-battery","telemetry unavailable: task allocation failed");
 }
