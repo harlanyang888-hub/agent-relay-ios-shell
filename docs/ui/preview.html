@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Relay 语音手表控制页面 - 原生 iPhone 静态预览</title>
+  <style>
+    :root {
+      --bg-page: #0f1115;
+      --card-bg-light: #ffffff;
+      --card-bg-dark: #1c1c1e;
+      --sub-card-bg-light: #f2f2f7;
+      --sub-card-bg-dark: #2c2c2e;
+      --screen-bg-light: #f2f2f7;
+      --screen-bg-dark: #000000;
+      
+      --label-light: #000000;
+      --label-dark: #ffffff;
+      --secondary-label-light: #6c6c70;
+      --secondary-label-dark: #8e8e93;
+      --tertiary-label-light: #aeaeb2;
+      --tertiary-label-dark: #48484a;
+      
+      --separator-light: rgba(60, 60, 67, 0.18);
+      --separator-dark: rgba(84, 84, 88, 0.35);
+      
+      --system-blue: #007aff;
+      --system-green: #34c759;
+      --system-orange: #ff9500;
+      --system-red: #ff3b30;
+      --system-gray: #8e8e93;
+      --system-fill-light: rgba(120, 120, 128, 0.12);
+      --system-fill-dark: rgba(120, 120, 128, 0.24);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--bg-page);
+      color: #e5e5ea;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    /* 顶部控制面板 */
+    header {
+      text-align: center;
+      max-width: 860px;
+      margin-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      font-size: 14px;
+      color: #98989f;
+      line-height: 1.5;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 16px;
+      margin-bottom: 8px;
+    }
+
+    .btn-scenario {
+      background: #1e222b;
+      border: 1px solid #333a46;
+      color: #d1d5db;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-scenario:hover {
+      background: #282f3d;
+      border-color: #4b5563;
+      color: #ffffff;
+    }
+
+    .btn-scenario.active {
+      background: var(--system-blue);
+      border-color: var(--system-blue);
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(0, 122, 255, 0.35);
+    }
+
+    .theme-toggle {
+      background: #242933;
+      border: 1px solid #3a4252;
+      color: #ffd60a;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 12px;
+    }
+
+    /* 手机机身模拟器 (iPhone 15 Pro 比例) */
+    .phone-wrapper {
+      position: relative;
+      width: 390px;
+      height: 844px;
+      background: #000;
+      border-radius: 54px;
+      padding: 12px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7), 0 0 0 2px #44474e, 0 0 0 5px #1c1d21;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .screen {
+      flex: 1;
+      background: var(--screen-bg-dark);
+      border-radius: 44px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      scroll-behavior: smooth;
+    }
+
+    /* Light Theme override on screen */
+    .screen.light-mode {
+      background: var(--screen-bg-light);
+    }
+    .screen.light-mode .card {
+      background: var(--card-bg-light);
+    }
+    .screen.light-mode .sub-card {
+      background: var(--sub-card-bg-light);
+    }
+    .screen.light-mode .text-primary {
+      color: var(--label-light);
+    }
+    .screen.light-mode .text-secondary {
+      color: var(--secondary-label-light);
+    }
+    .screen.light-mode .text-tertiary {
+      color: var(--tertiary-label-light);
+    }
+    .screen.light-mode .divider {
+      background: var(--separator-light);
+    }
+    .screen.light-mode .btn-system-fill {
+      background: var(--system-fill-light);
+      color: var(--label-light);
+    }
+    .screen.light-mode .nav-bar {
+      background: rgba(242, 242, 247, 0.85);
+      border-bottom-color: var(--separator-light);
+    }
+
+    /* iOS 状态栏与灵动岛 */
+    .status-bar {
+      height: 44px;
+      padding: 0 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+      font-weight: 600;
+      z-index: 10;
+      color: #fff;
+    }
+    .screen.light-mode .status-bar {
+      color: #000;
+    }
+    .dynamic-island {
+      width: 110px;
+      height: 30px;
+      background: #000;
+      border-radius: 20px;
+      margin: 0 auto;
+    }
+
+    /* iOS 导航条 */
+    .nav-bar {
+      height: 44px;
+      padding: 0 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      z-index: 9;
+      border-bottom: 0.5px solid var(--separator-dark);
+    }
+    .nav-bar .nav-title {
+      font-size: 17px;
+      font-weight: 600;
+    }
+    .nav-bar .nav-btn {
+      color: var(--system-blue);
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    /* 滚动主体区域 */
+    .content-area {
+      padding: 12px 16px 36px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* iOS Inset Grouped 卡片基类 */
+    .card {
+      background: var(--card-bg-dark);
+      border-radius: 18px;
+      padding: 14px 16px;
+      transition: background 0.2s ease;
+    }
+
+    .sub-card {
+      background: var(--sub-card-bg-dark);
+      border-radius: 14px;
+      padding: 12px 14px;
+    }
+
+    .text-primary {
+      color: var(--label-dark);
+    }
+    .text-secondary {
+      color: var(--secondary-label-dark);
+    }
+    .text-tertiary {
+      color: var(--tertiary-label-dark);
+    }
+
+    .divider {
+      height: 0.5px;
+      background: var(--separator-dark);
+      margin: 10px 0;
+    }
+
+    /* 1. 顶部设备卡片 */
+    .device-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .device-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .device-icon-wrap {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: rgba(0, 122, 255, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--system-blue);
+    }
+    .device-name {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .device-sub {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .btn-pill {
+      background: var(--system-fill-dark);
+      border: none;
+      color: var(--system-blue);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 14px;
+      cursor: pointer;
+    }
+
+    /* 2. 状态与电量卡片 */
+    .status-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .status-indicator-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .dot-green { background: var(--system-green); box-shadow: 0 0 8px rgba(52, 199, 89, 0.4); }
+    .dot-orange { background: var(--system-orange); }
+    .dot-gray { background: var(--system-gray); }
+    .dot-red { background: var(--system-red); }
+
+    .status-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .status-desc {
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .battery-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .battery-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .battery-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .battery-text {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 6px;
+    }
+    .badge-green { background: rgba(52, 199, 89, 0.16); color: var(--system-green); }
+    .badge-orange { background: rgba(255, 149, 0, 0.18); color: var(--system-orange); }
+    .badge-red { background: rgba(255, 59, 48, 0.16); color: var(--system-red); }
+    .badge-gray { background: rgba(142, 142, 147, 0.18); color: var(--system-gray); }
+
+    /* 3. 真实录音状态与时长 */
+    .recording-card {
+      position: relative;
+    }
+    .recording-badge-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .recording-time-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 4px 0 8px;
+    }
+    .recording-digits {
+      font-size: 38px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.5px;
+    }
+    .waveform {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 36px;
+    }
+    .waveform-bar {
+      width: 4px;
+      border-radius: 2px;
+      background: var(--tertiary-label-dark);
+      height: 6px;
+      transition: all 0.3s ease;
+    }
+    .waveform.active .waveform-bar {
+      background: var(--system-red);
+      animation: pulse 1s infinite alternate ease-in-out;
+    }
+    .waveform.active .waveform-bar:nth-child(1) { height: 14px; animation-delay: 0.1s; }
+    .waveform.active .waveform-bar:nth-child(2) { height: 26px; animation-delay: 0.3s; }
+    .waveform.active .waveform-bar:nth-child(3) { height: 32px; animation-delay: 0.0s; }
+    .waveform.active .waveform-bar:nth-child(4) { height: 20px; animation-delay: 0.4s; }
+    .waveform.active .waveform-bar:nth-child(5) { height: 10px; animation-delay: 0.2s; }
+
+    @keyframes pulse {
+      0% { transform: scaleY(0.5); }
+      100% { transform: scaleY(1.1); }
+    }
+
+    /* 4. 待发箱卡片 */
+    .outbox-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+    .outbox-card:active {
+      opacity: 0.7;
+    }
+    .outbox-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .outbox-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 5. 对话控制区域 */
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: -0.2px;
+      margin-bottom: 10px;
+    }
+    .btn-primary {
+      width: 100%;
+      height: 52px;
+      border-radius: 16px;
+      border: none;
+      font-size: 17px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--system-blue);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: transform 0.1s ease, background 0.2s ease, opacity 0.2s ease;
+    }
+    .btn-primary:active {
+      transform: scale(0.98);
+      opacity: 0.9;
+    }
+    .btn-primary.btn-green {
+      background: var(--system-green);
+    }
+    .btn-primary:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .btn-secondary {
+      flex: 1;
+      height: 44px;
+      border-radius: 14px;
+      border: none;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: transform 0.1s ease, opacity 0.2s ease;
+    }
+    .btn-secondary:active {
+      transform: scale(0.98);
+      opacity: 0.85;
+    }
+    .btn-secondary:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .btn-system-fill {
+      background: var(--system-fill-dark);
+      color: var(--label-dark);
+    }
+    .btn-destructive {
+      background: rgba(255, 59, 48, 0.14);
+      color: var(--system-red);
+    }
+
+    .conversation-hint {
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.4;
+      margin-top: 10px;
+    }
+
+    /* 6. 工具与诊断行 */
+    .row-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      cursor: pointer;
+    }
+    .row-item:active {
+      opacity: 0.6;
+    }
+    .row-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .row-title {
+      font-size: 15px;
+      font-weight: 500;
+    }
+    .row-sub {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .row-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 7. 手表按键快捷说明 */
+    .tips-card {
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .tips-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    /* iOS Home 底部安全区横条 */
+    .home-indicator {
+      width: 140px;
+      height: 5px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 100px;
+      margin: 12px auto 6px;
+    }
+    .screen.light-mode .home-indicator {
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    /* 交互动作反馈悬浮窗 */
+    .action-toast {
+      position: fixed;
+      bottom: 24px;
+      background: rgba(30, 34, 45, 0.95);
+      border: 1px solid #3b82f6;
+      color: #60a5fa;
+      padding: 10px 18px;
+      border-radius: 24px;
+      font-size: 13px;
+      font-weight: 500;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      display: none;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Agent Relay · 语音手表控制页面</h1>
+    <p>正式、中文、原生 iPhone 风格的设备控制界面。支持暗色/浅色模式、动态字体、VoiceOver 与诚实电量呈现。</p>
+    
+    <div class="toolbar">
+      <button class="btn-scenario active" onclick="setScenario('idle')">1. 空闲待命 (正常)</button>
+      <button class="btn-scenario" onclick="setScenario('recording')">2. 真实录音中 (00:24)</button>
+      <button class="btn-scenario" onclick="setScenario('paused')">3. 草稿暂停 (01:15)</button>
+      <button class="btn-scenario" onclick="setScenario('charging')">4. 正在充电 (92%)</button>
+      <button class="btn-scenario" onclick="setScenario('disconnected')">5. 断连与离线待发 (诚实电量)</button>
+      <button class="btn-scenario" onclick="setScenario('stale')">6. 电量数据已过期</button>
+      <button class="theme-toggle" onclick="toggleTheme()">☀️ 切换浅色/暗色</button>
+    </div>
+  </header>
+
+  <!-- 手机机身模拟器 -->
+  <div class="phone-wrapper">
+    <div class="screen" id="phoneScreen">
+      
+      <!-- 状态栏 -->
+      <div class="status-bar">
+        <span>09:41</span>
+        <div class="dynamic-island"></div>
+        <span>5G 􀛨 100%</span>
+      </div>
+
+      <!-- 导航条 -->
+      <div class="nav-bar">
+        <span class="nav-btn" onclick="toastAction('导航返回 / 主应用')">‹ Relay</span>
+        <span class="nav-title text-primary">语音设备</span>
+        <span class="nav-btn" onclick="toastAction('.openDiagnostics: 调起诊断页')">诊断</span>
+      </div>
+
+      <!-- 视图主要内容区域 -->
+      <div class="content-area">
+
+        <!-- 1. 顶部设备卡片 -->
+        <div class="card device-card">
+          <div class="device-info">
+            <div class="device-icon-wrap">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="6" y="4" width="12" height="16" rx="4"></rect>
+                <path d="M9 18v3a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-3"></path>
+                <path d="M9 6V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path>
+              </svg>
+            </div>
+            <div>
+              <div class="device-name text-primary" id="deviceName">Relay 语音手表</div>
+              <div class="device-sub text-secondary" id="deviceSubtitle">ESP32-S3 BLE · 原生音频链路</div>
+            </div>
+          </div>
+          <button class="btn-pill" id="quickReconnectBtn" onclick="toastAction('.reconnectOrAddDevice: 快捷重连')">重连设备</button>
+        </div>
+
+        <!-- 2. 主区域 1：连接与电量状态卡片 -->
+        <div class="card">
+          <!-- 连接行 -->
+          <div class="status-row">
+            <div class="status-indicator-title">
+              <div class="dot dot-green" id="connDot"></div>
+              <span class="status-title text-primary" id="connTitle">已连接</span>
+            </div>
+            <div class="status-desc text-secondary" id="connDetail">蓝牙低功耗链路正常 · 延迟 16ms</div>
+          </div>
+
+          <div class="divider"></div>
+
+          <!-- 电量行 (诚实呈现，禁止伪造) -->
+          <div class="battery-row">
+            <div class="battery-header">
+              <div class="battery-left">
+                <svg id="batteryIcon" width="22" height="15" viewBox="0 0 22 15" fill="currentColor" style="color: var(--system-green);">
+                  <rect x="1" y="1" width="17" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                  <rect x="3" y="3" width="12" height="9" rx="1.5"/>
+                  <path d="M19 5.5v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                <span class="battery-text text-primary" id="batteryText">85%</span>
+              </div>
+              <span class="badge badge-green" id="batteryBadge">正常</span>
+            </div>
+            <div class="status-desc text-secondary" id="batteryDetail">电量正常 · 预计可用约 6 小时</div>
+          </div>
+        </div>
+
+        <!-- 3. 主区域 2：真实录音状态与计时器卡片 -->
+        <div class="card recording-card">
+          <div class="recording-badge-pill" id="recordingPill" style="background: rgba(142, 142, 147, 0.18); color: var(--system-gray);">
+            <div class="dot dot-gray" id="recordingDot" style="width: 8px; height: 8px;"></div>
+            <span id="recordingTitle">空闲待命</span>
+          </div>
+
+          <div class="recording-time-row">
+            <div class="recording-digits text-secondary" id="recordingTime">00:00</div>
+            <div class="waveform" id="waveform">
+              <div class="waveform-bar"></div>
+              <div class="waveform-bar"></div>
+              <div class="waveform-bar"></div>
+              <div class="waveform-bar"></div>
+              <div class="waveform-bar"></div>
+            </div>
+          </div>
+
+          <div class="status-desc text-secondary" id="recordingDetail">
+            麦克风就绪。长按手表 BOOT 键或点下方按钮开始说话
+          </div>
+        </div>
+
+        <!-- 4. 主区域 3：待发箱概览卡片 -->
+        <div class="card outbox-card" onclick="toastAction('.openOutbox: 打开待发箱与恢复')">
+          <div class="outbox-info">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--system-blue);">
+              <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
+              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+            </svg>
+            <div>
+              <div class="outbox-title-row">
+                <span class="status-title text-primary" id="pendingText">待发箱已清空</span>
+                <span class="badge badge-green" id="pendingBadge">全部已发</span>
+              </div>
+              <div class="status-desc text-secondary" id="pendingDetail">所有录音均已成功交付</div>
+            </div>
+          </div>
+          <span class="text-tertiary">›</span>
+        </div>
+
+        <!-- 5. 次区域：对话控制区域 -->
+        <div class="card">
+          <div class="section-title text-secondary">对话控制</div>
+          
+          <!-- 主操作按钮 (明确区分发送与结束) -->
+          <button class="btn-primary" id="primaryBtn" onclick="handlePrimaryClick()">
+            <svg id="primaryIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2H3v2a9 9 0 0 0 8 8.94V23h2v-2.06A9 9 0 0 0 21 12v-2h-2z"/>
+            </svg>
+            <span id="primaryTitle">开始说话</span>
+          </button>
+
+          <!-- 次级操作行 -->
+          <div class="btn-row">
+            <button class="btn-secondary btn-system-fill" id="pauseResumeBtn" disabled onclick="toastAction('.pauseResumeRecording: 暂停/继续')">
+              ⏸️ <span id="pauseResumeTitle">暂停录音</span>
+            </button>
+            <button class="btn-secondary btn-destructive" id="endConversationBtn" disabled onclick="toastAction('.endConversation: 结束当前对话')">
+              ✕ <span id="endConversationTitle">结束当前对话</span>
+            </button>
+          </div>
+
+          <div class="conversation-hint text-secondary">
+            说明：『发送本条』保留上下文继续多轮对话；『结束当前对话』将完成并归档整轮会话。
+          </div>
+        </div>
+
+        <!-- 6. 次区域：设备与诊断入口 -->
+        <div class="card">
+          <div class="section-title text-secondary">设备与诊断</div>
+
+          <div class="row-item" onclick="toastAction('.reconnectOrAddDevice: 配对 / 重连设备')">
+            <div class="row-left">
+              <span style="font-size: 18px;">📡</span>
+              <div>
+                <div class="row-title text-primary">配对 / 重连设备</div>
+                <div class="row-sub text-secondary">搜索或切换已绑定的 ESP32 手表</div>
+              </div>
+            </div>
+            <span class="text-tertiary">›</span>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row-item" onclick="toastAction('.openOutbox: 查看待发箱与恢复')">
+            <div class="row-left">
+              <span style="font-size: 18px;">📥</span>
+              <div>
+                <div class="row-title text-primary">录音待发箱与恢复</div>
+                <div class="row-sub text-secondary">网络恢复后续传或导出已保存的录音文件</div>
+              </div>
+            </div>
+            <div class="row-right">
+              <span class="badge badge-orange" id="outboxCountBadge" style="display: none;">2</span>
+              <span class="text-tertiary">›</span>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row-item" onclick="toastAction('.openDiagnostics: 调起原有高级诊断页面')">
+            <div class="row-left">
+              <span style="font-size: 18px;">🩺</span>
+              <div>
+                <div class="row-title text-primary">穿戴设备高级诊断</div>
+                <div class="row-sub text-secondary">打开原始诊断日志与底层蓝牙测试页</div>
+              </div>
+            </div>
+            <span class="text-tertiary">›</span>
+          </div>
+        </div>
+
+        <!-- 7. 底部硬件按键快捷说明 -->
+        <div class="sub-card tips-card">
+          <div class="tips-header text-primary">
+            <span>💡</span> 手表硬件按键捷径
+          </div>
+          <div class="text-secondary" style="margin-top: 4px;">
+            • BOOT 长按：开始 / 发送本条；短按：暂停 / 继续。<br>
+            • PWR 长按：发送并结束当前对话。<br>
+            • 锁屏及后台下均支持硬件键直接唤醒与采音。
+          </div>
+        </div>
+
+        <!-- Home Indicator -->
+        <div class="home-indicator"></div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="action-toast" id="actionToast"></div>
+
+  <script>
+    let currentScenario = 'idle';
+
+    const scenarios = {
+      idle: {
+        connState: 'connected',
+        connTitle: '已连接',
+        connDetail: '蓝牙低功耗链路正常 · 延迟 16ms',
+        batteryText: '85%',
+        batteryDetail: '电量正常 · 预计可用约 6 小时',
+        batteryBadge: '正常',
+        batteryBadgeClass: 'badge-green',
+        batteryColor: 'var(--system-green)',
+        recordingTitle: '空闲待命',
+        recordingDotClass: 'dot-gray',
+        recordingPillBg: 'rgba(142, 142, 147, 0.18)',
+        recordingPillColor: 'var(--system-gray)',
+        recordingTime: '00:00',
+        recordingDetail: '麦克风就绪。长按手表 BOOT 键或点下方按钮开始说话',
+        waveformActive: false,
+        pendingText: '待发箱已清空',
+        pendingDetail: '所有录音均已成功交付',
+        pendingBadge: '全部已发',
+        pendingBadgeClass: 'badge-green',
+        outboxCountBadge: '',
+        primaryTitle: '开始说话',
+        primaryClass: 'btn-primary',
+        primaryEnabled: true,
+        pauseResumeTitle: '暂停录音',
+        pauseResumeEnabled: false,
+        endConversationEnabled: false
+      },
+      recording: {
+        connState: 'connected',
+        connTitle: '已连接',
+        connDetail: '音频流传输中 (ASK 采音模式)',
+        batteryText: '82%',
+        batteryDetail: '正在放电 · 蓝牙采音中',
+        batteryBadge: '正常',
+        batteryBadgeClass: 'badge-green',
+        batteryColor: 'var(--system-green)',
+        recordingTitle: '正在录音...',
+        recordingDotClass: 'dot-red',
+        recordingPillBg: 'rgba(255, 59, 48, 0.18)',
+        recordingPillColor: 'var(--system-red)',
+        recordingTime: '00:24',
+        recordingDetail: '麦克风：ESP32 硬件采音中 · 点击“发送本条”保留多轮会话',
+        waveformActive: true,
+        pendingText: '待发箱已清空',
+        pendingDetail: '上条消息已交付服务端',
+        pendingBadge: '全部已发',
+        pendingBadgeClass: 'badge-green',
+        outboxCountBadge: '',
+        primaryTitle: '发送本条（保留会话）',
+        primaryClass: 'btn-primary btn-green',
+        primaryEnabled: true,
+        pauseResumeTitle: '暂停录音',
+        pauseResumeEnabled: true,
+        endConversationEnabled: true
+      },
+      paused: {
+        connState: 'connected',
+        connTitle: '已连接',
+        connDetail: '草稿已封口安全保存',
+        batteryText: '80%',
+        batteryDetail: '电量正常',
+        batteryBadge: '正常',
+        batteryBadgeClass: 'badge-green',
+        batteryColor: 'var(--system-green)',
+        recordingTitle: '录音已暂停 (草稿保留)',
+        recordingDotClass: 'dot-orange',
+        recordingPillBg: 'rgba(255, 149, 0, 0.18)',
+        recordingPillColor: 'var(--system-orange)',
+        recordingTime: '01:15',
+        recordingDetail: '已安全暂存 01:15 语音。可继续追加录制或直接发送本条',
+        waveformActive: false,
+        pendingText: '待发箱已清空',
+        pendingDetail: '草稿尚未进入待发队列',
+        pendingBadge: '草稿保留',
+        pendingBadgeClass: 'badge-orange',
+        outboxCountBadge: '',
+        primaryTitle: '发送本条（保留会话）',
+        primaryClass: 'btn-primary btn-green',
+        primaryEnabled: true,
+        pauseResumeTitle: '继续录音',
+        pauseResumeEnabled: true,
+        endConversationEnabled: true
+      },
+      charging: {
+        connState: 'connected',
+        connTitle: '已连接',
+        connDetail: '设备通过磁吸底座充电中',
+        batteryText: '92%',
+        batteryDetail: '正在充电 · 闪电指示',
+        batteryBadge: '充电中',
+        batteryBadgeClass: 'badge-green',
+        batteryColor: 'var(--system-green)',
+        recordingTitle: '空闲待命',
+        recordingDotClass: 'dot-gray',
+        recordingPillBg: 'rgba(142, 142, 147, 0.18)',
+        recordingPillColor: 'var(--system-gray)',
+        recordingTime: '00:00',
+        recordingDetail: '正在充电，可随时开始语音交互',
+        waveformActive: false,
+        pendingText: '待发箱已清空',
+        pendingDetail: '网络就绪',
+        pendingBadge: '全部已发',
+        pendingBadgeClass: 'badge-green',
+        outboxCountBadge: '',
+        primaryTitle: '开始说话',
+        primaryClass: 'btn-primary',
+        primaryEnabled: true,
+        pauseResumeTitle: '暂停录音',
+        pauseResumeEnabled: false,
+        endConversationEnabled: false
+      },
+      disconnected: {
+        connState: 'disconnected',
+        connTitle: '未连接',
+        connDetail: '未搜索到 BLE 广播，请按手表按键唤醒',
+        batteryText: '电量未知 (已断连)',
+        batteryDetail: '断开连接，电量信息暂不可用（严禁伪造百分比）',
+        batteryBadge: '已断连',
+        batteryBadgeClass: 'badge-gray',
+        batteryColor: 'var(--system-gray)',
+        recordingTitle: '设备离线',
+        recordingDotClass: 'dot-gray',
+        recordingPillBg: 'rgba(142, 142, 147, 0.18)',
+        recordingPillColor: 'var(--system-gray)',
+        recordingTime: '00:00',
+        recordingDetail: '请靠近手表或重新配对连接',
+        waveformActive: false,
+        pendingText: '2 条录音等待发送',
+        pendingDetail: '断网与断链时已在本地安全暂存，重连后自动补交',
+        pendingBadge: '2 条待发',
+        pendingBadgeClass: 'badge-orange',
+        outboxCountBadge: '2',
+        primaryTitle: '开始说话 (设备离线)',
+        primaryClass: 'btn-primary',
+        primaryEnabled: false,
+        pauseResumeTitle: '暂停录音',
+        pauseResumeEnabled: false,
+        endConversationEnabled: false
+      },
+      stale: {
+        connState: 'connected',
+        connTitle: '已连接',
+        connDetail: '链路处于低功耗保活中',
+        batteryText: '数据已过期 (15分钟前)',
+        batteryDetail: '上次同步电量为 65%，设备较长时间未上报新数据',
+        batteryBadge: '已过期',
+        batteryBadgeClass: 'badge-orange',
+        batteryColor: 'var(--system-orange)',
+        recordingTitle: '空闲待命',
+        recordingDotClass: 'dot-gray',
+        recordingPillBg: 'rgba(142, 142, 147, 0.18)',
+        recordingPillColor: 'var(--system-gray)',
+        recordingTime: '00:00',
+        recordingDetail: '手表按键后将自动同步最新电量与时间戳',
+        waveformActive: false,
+        pendingText: '待发箱已清空',
+        pendingDetail: '队列正常',
+        pendingBadge: '全部已发',
+        pendingBadgeClass: 'badge-green',
+        outboxCountBadge: '',
+        primaryTitle: '开始说话',
+        primaryClass: 'btn-primary',
+        primaryEnabled: true,
+        pauseResumeTitle: '暂停录音',
+        pauseResumeEnabled: false,
+        endConversationEnabled: false
+      }
+    };
+
+    function setScenario(key) {
+      currentScenario = key;
+      const data = scenarios[key];
+      if (!data) return;
+
+      // 更新按钮高亮
+      document.querySelectorAll('.btn-scenario').forEach(btn => btn.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // 连接状态
+      const dot = document.getElementById('connDot');
+      dot.className = 'dot ' + (data.connState === 'connected' ? 'dot-green' : 'dot-gray');
+      document.getElementById('connTitle').textContent = data.connTitle;
+      document.getElementById('connDetail').textContent = data.connDetail;
+
+      // 电量
+      document.getElementById('batteryText').textContent = data.batteryText;
+      document.getElementById('batteryDetail').textContent = data.batteryDetail;
+      const batBadge = document.getElementById('batteryBadge');
+      batBadge.textContent = data.batteryBadge;
+      batBadge.className = 'badge ' + data.batteryBadgeClass;
+      document.getElementById('batteryIcon').style.color = data.batteryColor;
+
+      // 录音状态
+      document.getElementById('recordingTitle').textContent = data.recordingTitle;
+      document.getElementById('recordingDot').className = 'dot ' + data.recordingDotClass;
+      const rPill = document.getElementById('recordingPill');
+      rPill.style.background = data.recordingPillBg;
+      rPill.style.color = data.recordingPillColor;
+      
+      const rTime = document.getElementById('recordingTime');
+      rTime.textContent = data.recordingTime;
+      rTime.className = 'recording-digits ' + (data.waveformActive ? 'text-primary' : 'text-secondary');
+      
+      document.getElementById('recordingDetail').textContent = data.recordingDetail;
+      const wave = document.getElementById('waveform');
+      if (data.waveformActive) {
+        wave.classList.add('active');
+      } else {
+        wave.classList.remove('active');
+      }
+
+      // 待发箱
+      document.getElementById('pendingText').textContent = data.pendingText;
+      document.getElementById('pendingDetail').textContent = data.pendingDetail;
+      const pBadge = document.getElementById('pendingBadge');
+      pBadge.textContent = data.pendingBadge;
+      pBadge.className = 'badge ' + data.pendingBadgeClass;
+
+      const outBadge = document.getElementById('outboxCountBadge');
+      if (data.outboxCountBadge) {
+        outBadge.textContent = data.outboxCountBadge;
+        outBadge.style.display = 'inline-block';
+      } else {
+        outBadge.style.display = 'none';
+      }
+
+      // 主操作按钮
+      const pBtn = document.getElementById('primaryBtn');
+      pBtn.className = data.primaryClass;
+      pBtn.disabled = !data.primaryEnabled;
+      document.getElementById('primaryTitle').textContent = data.primaryTitle;
+
+      // 次级按钮
+      const prBtn = document.getElementById('pauseResumeBtn');
+      prBtn.disabled = !data.pauseResumeEnabled;
+      document.getElementById('pauseResumeTitle').textContent = data.pauseResumeTitle;
+
+      const endBtn = document.getElementById('endConversationBtn');
+      endBtn.disabled = !data.endConversationEnabled;
+
+      toastAction(`已切换至场景：${key}`);
+    }
+
+    function toggleTheme() {
+      const screen = document.getElementById('phoneScreen');
+      screen.classList.toggle('light-mode');
+      const isLight = screen.classList.contains('light-mode');
+      toastAction(isLight ? '已切换至 iOS 浅色模式' : '已切换至 iOS 暗色模式');
+    }
+
+    function handlePrimaryClick() {
+      if (currentScenario === 'recording') {
+        toastAction('.primaryAction 触发：发送本条录音（保留会话上下文）');
+      } else if (currentScenario === 'paused') {
+        toastAction('.primaryAction 触发：发送草稿录音（保留会话上下文）');
+      } else {
+        toastAction('.primaryAction 触发：开启麦克风开始说话');
+      }
+    }
+
+    let toastTimer = null;
+    function toastAction(message) {
+      const toast = document.getElementById('actionToast');
+      toast.textContent = `[UI 语义事件] ${message}`;
+      toast.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.style.display = 'none';
+      }, 2500);
+    }
+  </script>
+</body>
+</html>

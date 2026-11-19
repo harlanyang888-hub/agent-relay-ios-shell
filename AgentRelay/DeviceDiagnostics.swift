@@ -156,6 +156,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var buttonSequence: UInt32 = 0
     var onChange: (() -> Void)?
     var canRunButtonTrial: Bool { selected?.state == .connected && notificationsReady }
+    var isVoiceDeviceReady: Bool { canRunButtonTrial && (!BLERecoveryLab.enabled || authenticatedIdentity) }
     var authorizedButtonIDs: [UUID] {
         guard BLERecoveryLab.usesASK, #available(iOS 18.0, *),
               let binding = accessoryBinding as? RecoveryAccessoryBinding else { return [] }
@@ -945,7 +946,7 @@ final class DeviceDiagnosticsViewController: UIViewController, UITableViewDataSo
         else if WatchVoiceSession.shared.isPausedDraft { WatchVoiceSession.shared.phoneStart() }
         refresh()
     }
-    @objc private func showVoiceRecovery() {
+    @objc func showVoiceRecovery() {
         guard #available(iOS 17.4, *) else { return }
         let watch = WatchVoiceSession.shared
         let list = UIAlertController(title: "录音待发箱", message: "待发文件会在网络和登录恢复后继续发送。结果未知的文件只核对回执，不自动重发。", preferredStyle: .actionSheet)

@@ -60,6 +60,11 @@ final class WatchVoiceSession {
     var send: ((Data) -> Void)?
     private(set) var lastError: String?
     var hasDraft: Bool { journal.draft != nil }
+    // Read-only projections for presentation; UI does not own recording state.
+    var captureStatus: WatchReply.Capture { capture }
+    var pendingDeliveryCount: Int { journal.deliveries.count }
+    var hasConversation: Bool { journal.session != nil }
+    var actionInFlight: Bool { pending != nil || starting || finalizing }
     var isPausedDraft: Bool { journal.draft != nil && !WearableService.shared.isRecording && !starting && !finalizing }
     var summary: String {
         let uncertain = journal.deliveries.filter { ["uncertain", "needsReview"].contains($0.state) }.count

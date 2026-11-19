@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
+          swiftc AgentRelay/WatchBattery.swift tests/battery/main.swift -o /tmp/watch-battery-checks
+          /tmp/watch-battery-checks
           swiftc AgentRelay/WatchWire.swift tests/watch/main.swift -o /tmp/watch-wire-checks
           /tmp/watch-wire-checks
           swiftc -parse-as-library -D RELAY_HEADLESS_TEST AgentRelay/WatchWire.swift AgentRelay/BLELabCommand.swift tests/voice-lifecycle/SDKStubs.swift AgentRelay/VoiceConversationProbe.swift AgentRelay/WatchVoiceSession.swift tests/voice-lifecycle/main.swift -o /tmp/voice-lifecycle-checks
@@ -39,6 +41,8 @@ jobs:
           test "${sdk_version%%.*}" -ge 26
       - name: Check command queue and phone receipts
         run: |
+          swiftc AgentRelay/WatchBattery.swift tests/battery/main.swift -o /tmp/watch-battery-checks
+          /tmp/watch-battery-checks
           python3 -m unittest discover -s tools -p test_ble_command_queue.py -v
           swiftc AgentRelay/BLELabCommand.swift tests/commands/main.swift -o /tmp/recovery-command-checks
           /tmp/recovery-command-checks

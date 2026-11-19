@@ -41,7 +41,10 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
     }
 
     @objc private func openDeviceDiagnostics() {
-        let controller = UINavigationController(rootViewController: DeviceDiagnosticsViewController())
+        let root: UIViewController
+        if BLERecoveryLab.usesASK, #available(iOS 17.4, *) { root = RelayWatchController() }
+        else { root = DeviceDiagnosticsViewController() }
+        let controller = UINavigationController(rootViewController: root)
         controller.modalPresentationStyle = .fullScreen
         present(controller, animated: true)
     }

@@ -43,7 +43,37 @@ final class WatchBatteryStore {
         guard deviceID == id, connected else { return }
         available = true
         sample = error == nil ? data.flatMap { WatchBatterySample(packet: $0) } : nil
+        recordSample()
         notify()
+    }
+    var historyURL: URL? {
+        guard let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return root.appendingPathComponent("watch-battery.jsonl")
+    }
+    private func recordSample() {
+        guard let url = historyURL else { return }
+        var row: [String: Any] = ["at": ISO8601DateFormatter().string(from: Date()),
+            "valid": sample != nil, "device": deviceID?.uuidString ?? "unknown",
+            "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"]
+        if let sample = sample {
+            row["batteryPresent"] = sample.present; row["usb"] = sample.usb; row["charging"] = sample.charging
+            row["percent"] = sample.percent; row["millivolts"] = sample.millivolts
+        }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]); data.append(10)
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > 1_000_000 {
+                // A bounded telemetry log; this never touches recordings or journals.
+                let old = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").suffix(1500).joined(separator: "\n") + "\n"
+                try Data(old.utf8).write(to: url, options: .atomic)
+            }
+            if !FileManager.default.fileExists(atPath: url.path) { try data.write(to: url) }
+            else {
+                let handle = try FileHandle(forWritingTo: url); defer { try? handle.close() }
+                try handle.seekToEnd(); try handle.write(contentsOf: data)
+            }
+        } catch { /* Telemetry persistence must not affect the recording path. */ }
     }
     var title: String {
         guard let sample = sample else { return "电量未知" }
