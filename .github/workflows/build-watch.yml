@@ -29,14 +29,14 @@ jobs:
           . /opt/esp/idf/export.sh
           cd /tmp/watch-power-baseline/firmware/watch
           idf.py set-target esp32s3
-          idf.py -j 2 build
+          cmake --build build --parallel 2
       - name: Build DFS candidate
         shell: bash
         working-directory: firmware/watch
         run: |
           . /opt/esp/idf/export.sh
           idf.py set-target esp32s3
-          idf.py -j 2 build
+          cmake --build build --parallel 2
       - name: Verify protected configuration and package both images
         shell: bash
         run: |
