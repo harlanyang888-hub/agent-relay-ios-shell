@@ -41,11 +41,11 @@ final class RelayWatchController: UIViewController {
         let busy = watch.actionInFlight
         let title: String
         switch phase {
-        case .idle: title = "随时开始说话"
-        case .starting: title = "正在启动录音"
-        case .recording: title = "正在录音"
-        case .paused: title = "录音已暂停"
-        case .finalizing: title = "正在保存录音"
+        case .idle: title = "待机"
+        case .starting: title = "启动中"
+        case .recording: title = "录音中"
+        case .paused: title = "已暂停"
+        case .finalizing: title = "保存中"
         }
         let age = battery.sample.map { Date().timeIntervalSince($0.receivedAt) } ?? .infinity
         let batteryStyle: WatchDashboardViewState.BatteryStatus
@@ -57,28 +57,24 @@ final class RelayWatchController: UIViewController {
         else { batteryStyle = .normal }
         let seconds = max(0, Int(audio.capturedRecordingDuration))
         let time = recording ? String(format: "%02d:%02d", seconds / 60, seconds % 60) : "--:--"
-        let detail: String
-        if let error = watch.lastError { detail = error }
-        else if recording { detail = "本段时长 · 手机采音：" + (audio.recordingInputName.isEmpty ? "等待输入信息" : audio.recordingInputName) }
-        else if paused { detail = "草稿已保留。继续追加，或发送为一条语音。" }
-        else { detail = watch.hasConversation ? "下一条语音继续当前对话" : "开始录音，发送后创建新对话" }
+        let detail = watch.lastError ?? ""
         dashboard.configure(state: WatchDashboardViewState(
-            deviceName: "relay watch", deviceSubtitle: "按键控制 · 手机录音",
-            statusTitle: ready ? "设备已就绪" : "设备尚未就绪",
-            statusDetail: ready ? "可通过手表按键控制手机录音" : "配对后靠近手机，等待设备就绪",
-            connectionState: ready ? .connected : .disconnected,
+            deviceName: "relay watch", deviceSubtitle: nil,
+            statusTitle: ready ? "已连接" : battery.connected ? "连接中" : "未连接",
+            statusDetail: "",
+            connectionState: ready ? .connected : battery.connected ? .connecting : .disconnected,
             batteryText: battery.title, batteryDetail: battery.detail,
             isCharging: battery.sample?.charging == true, batteryStatus: batteryStyle,
             recordingState: recording ? .recording : paused ? .pausedDraft : busy ? .transmitting : .idle,
             recordingTitle: title, recordingDetail: detail, recordingTime: time,
             isRecording: recording, isPaused: paused, pendingCount: watch.pendingDeliveryCount,
-            pendingText: watch.pendingDeliveryCount == 0 ? "暂无待发录音" : "\(watch.pendingDeliveryCount) 条录音等待确认",
-            pendingDetail: "网络或登录恢复后自动重试；结果不确定的文件可在待发箱核对。",
-            primaryButton: .init(title: watch.hasDraft ? "发送本条 · 保留对话" : "开始录音", isEnabled: !busy),
-            pauseResumeButton: .init(title: paused ? "继续录音" : "暂停录音", isEnabled: !busy && (recording || paused)),
-            endConversationButton: .init(title: watch.hasDraft ? "发送并结束对话" : "结束当前对话", isEnabled: watch.hasConversation || watch.hasDraft || busy),
-            reconnectButton: .init(title: "添加 / 切换设备", isEnabled: !busy && !recording),
-            outboxButton: .init(title: "录音待发箱"), diagnosticsButton: .init(title: "设置与诊断")))
+            pendingText: watch.pendingDeliveryCount == 0 ? "" : "\(watch.pendingDeliveryCount) 条待发",
+            pendingDetail: nil,
+            primaryButton: .init(title: watch.hasDraft ? "发送" : "开始录音", isEnabled: !busy),
+            pauseResumeButton: .init(title: paused ? "继续" : "暂停", isEnabled: !busy && (recording || paused)),
+            endConversationButton: .init(title: "结束对话", isEnabled: watch.hasConversation || watch.hasDraft || busy),
+            reconnectButton: .init(title: "设备", isEnabled: !busy && !recording),
+            outboxButton: .init(title: "待发"), diagnosticsButton: .init(title: "设置"), tipsText: nil, isRefreshingBattery: battery.isRefreshing))
     }
     private func handle(_ action: WatchDashboardAction) {
         let watch = WatchVoiceSession.shared
@@ -91,6 +87,7 @@ final class RelayWatchController: UIViewController {
         case .reconnectOrAddDevice: chooseDevice()
         case .openOutbox: openDiagnostics(outbox: true)
         case .openDiagnostics: openDiagnostics(outbox: false)
+        case .refreshBattery: BLEProbe.shared.refreshWatchBattery()
         }
         refresh()
     }

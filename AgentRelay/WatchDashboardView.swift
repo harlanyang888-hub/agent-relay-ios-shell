@@ -2,8 +2,8 @@
 //  WatchDashboardView.swift
 //  AgentRelay
 //
-//  Created for relay watch控制页面 (Native iOS UI)
-//  纯 UIKit 视图，无业务推导与副作用，通过 configure(state:) 单向渲染，动作通过闭包外发。
+//  Created for relay watch 控制页面 (Native iOS UI)
+//  纯 UIKit 视图，无业务推导与副作用，通过 configure(state:) 单向渲染，动作通过 onAction 外发。
 //
 
 import UIKit
@@ -14,51 +14,51 @@ import UIKit
 public struct WatchDashboardViewState: Equatable {
 
     // MARK: 1. 设备基本信息
-    /// 设备友好名称，例如 "relay watch"、"ESP32-S3 Watch"
+    /// 设备友好名称，固定为 "relay watch"
     public var deviceName: String
-    /// 硬件/链路副标题，例如 "ESP32-S3 BLE · 原生音频链路"
+    /// 硬件/链路副标题（技术说明如“按键控制/手机采音”已被规范剔除）
     public var deviceSubtitle: String?
 
-    // MARK: 2. 连接状态 (主区域)
-    /// 状态主标题，例如 "已连接"、"未连接"、"正在重连..."
+    // MARK: 2. 连接状态
+    /// 状态主标题，例如 "已连接"、"未连接"、"正在连接"
     public var statusTitle: String
-    /// 状态详细描述，例如 "蓝牙低功耗链路正常 · 延迟 16ms"、"未发现已绑定的穿戴设备"
+    /// 状态详细说明 (仅真实错误/异常时展示)
     public var statusDetail: String
-    /// 连接状态视觉样式
+    /// 连接状态视觉等级
     public var connectionState: ConnectionState
 
     public enum ConnectionState: String, Equatable {
-        case connected       // 已连接 (绿灯)
-        case connecting      // 正在连接/重连 (橙黄灯)
-        case disconnected    // 未连接/已断链 (灰色)
-        case error           // 异常或鉴权失败 (红灯)
+        case connected       // 已连接 (绿)
+        case connecting      // 正在连接 (橙)
+        case disconnected    // 未连接 (灰)
+        case error           // 连接异常 (红)
     }
 
-    // MARK: 3. 电量与充电状态 (主区域，诚实呈现，禁止伪造)
-    /// 电量主文本，例如 "85%"、"电量未知"、"已断连"、"数据已过期"
+    // MARK: 3. 电量与充电状态 (诚实呈现，禁止伪造)
+    /// 电量主文本，例如 "85%"、"电量未知"
     public var batteryText: String
-    /// 电量详细说明，例如 "正在充电"、"断开连接，电量信息暂不可用"、"更新于 10:15 (已过期)"
+    /// 电量详细说明，例如 "正在充电"、"数据已过期"
     public var batteryDetail: String
     /// 是否正在充电
     public var isCharging: Bool
-    /// 电量呈现样式等级（用于图标与色彩映射）
+    /// 电量呈现样式等级
     public var batteryStatus: BatteryStatus
 
     public enum BatteryStatus: String, Equatable {
         case normal          // 正常读取到有效电量 (>=20%)
         case low             // 低电量 (<20%)
         case charging        // 充电中
-        case unknown         // 未知（从未上报或硬件不支持）
-        case stale           // 数据已过期（长时间未更新）
-        case disconnected    // 设备断连（不可用）
+        case unknown         // 未知（从未上报或不可用）
+        case stale           // 数据已过期
+        case disconnected    // 设备断连
     }
 
-    // MARK: 4. 真实录音状态与时长 (主区域)
+    // MARK: 4. 录音状态与时长
     /// 录音状态分类
     public var recordingState: RecordingState
-    /// 录音状态主标题，例如 "空闲待命"、"正在录音..."、"录音已暂停 (草稿保留)"、"正在上传..."
+    /// 录音状态标题，例如 "空闲待命"、"正在录音"、"录音已暂停"
     public var recordingTitle: String
-    /// 录音详细信息，例如 "麦克风：ESP32 手表采音"、"按“发送本条”提交，或“结束当前对话”"
+    /// 录音详细信息 (仅真实错误或关键信息时展示)
     public var recordingDetail: String
     /// 录音时长文本，例如 "00:00"、"00:42" (等宽字体展示)
     public var recordingTime: String
@@ -70,34 +70,37 @@ public struct WatchDashboardViewState: Equatable {
     public enum RecordingState: String, Equatable {
         case idle            // 空闲待命
         case recording       // 正在录音
-        case pausedDraft     // 录音已暂停，草稿已封口保留
-        case transmitting    // 正在发送/上报
+        case pausedDraft     // 录音已暂停
+        case transmitting    // 正在发送
     }
 
-    // MARK: 5. 待发箱状态 (主区域)
+    // MARK: 5. 待发箱状态
     /// 待发送文件数量
     public var pendingCount: Int
-    /// 待发状态主文本，例如 "全部已同步"、"2 条录音等待发送"
+    /// 待发状态主文本
     public var pendingText: String
-    /// 待发详细信息，例如 "网络离线，录音已保存在本地，将在恢复连接后补发"
+    /// 待发详细信息
     public var pendingDetail: String?
 
-    // MARK: 6. 按钮与操作配置 (次区域)
-    /// 主操作按钮配置 (开始说话 / 发送本条(保留会话) / 继续说话)
+    // MARK: 6. 按钮与操作配置
+    /// 主操作按钮配置 (开始录音 / 发送)
     public var primaryButton: ButtonConfig
     /// 暂停/继续操作按钮配置
     public var pauseResumeButton: ButtonConfig
-    /// 结束当前对话按钮配置 (明确区分于“发送本条”)
+    /// 结束当前对话按钮配置
     public var endConversationButton: ButtonConfig
-    /// 配对/重连设备按钮配置
+    /// 设备切换/重连配置
     public var reconnectButton: ButtonConfig
     /// 待发箱入口配置
     public var outboxButton: ButtonConfig
-    /// 诊断入口配置
+    /// 诊断/设置入口配置
     public var diagnosticsButton: ButtonConfig
 
-    /// 底部操作提示或硬件按键说明文案
+    /// 提示文案（保留兼容，UI中不展示教程说明）
     public var tipsText: String?
+
+    /// 电量刷新中状态 (由 Codex 接入，驱动刷新图标动画与禁用)
+    public var isRefreshingBattery: Bool
 
     // MARK: - 按钮配置数据结构
     public struct ButtonConfig: Equatable {
@@ -135,33 +138,34 @@ public struct WatchDashboardViewState: Equatable {
         ]
     }
 
-    // MARK: - 全量初始化
+    // MARK: - 全量初始化 (首次默认：未连接、电量未知、操作禁用)
     public init(
         deviceName: String = "relay watch",
-        deviceSubtitle: String? = "按键控制 · 手机录音",
+        deviceSubtitle: String? = nil,
         statusTitle: String = "未连接",
-        statusDetail: String = "等待设备连接",
+        statusDetail: String = "",
         connectionState: ConnectionState = .disconnected,
         batteryText: String = "电量未知",
-        batteryDetail: String = "等待手表数据",
+        batteryDetail: String = "",
         isCharging: Bool = false,
         batteryStatus: BatteryStatus = .unknown,
         recordingState: RecordingState = .idle,
         recordingTitle: String = "空闲待命",
-        recordingDetail: String = "麦克风就绪，长按手表 BOOT 或点击下方按钮开始",
+        recordingDetail: String = "",
         recordingTime: String = "--:--",
         isRecording: Bool = false,
         isPaused: Bool = false,
         pendingCount: Int = 0,
-        pendingText: String = "待发箱已清空",
-        pendingDetail: String? = "全部录音均已成功送出",
-        primaryButton: ButtonConfig = ButtonConfig(title: "开始说话", isEnabled: false),
-        pauseResumeButton: ButtonConfig = ButtonConfig(title: "暂停录音", isEnabled: false),
-        endConversationButton: ButtonConfig = ButtonConfig(title: "结束当前对话", isEnabled: false),
-        reconnectButton: ButtonConfig = ButtonConfig(title: "配对 / 重连设备", isEnabled: true),
-        outboxButton: ButtonConfig = ButtonConfig(title: "录音待发箱", isEnabled: true),
-        diagnosticsButton: ButtonConfig = ButtonConfig(title: "穿戴设备高级诊断", isEnabled: true),
-        tipsText: String? = "BOOT 长按：开始 / 发送本条；短按：暂停 / 继续。\nPWR 长按：发送并结束当前对话。"
+        pendingText: String = "",
+        pendingDetail: String? = nil,
+        primaryButton: ButtonConfig = ButtonConfig(title: "开始录音", isEnabled: false),
+        pauseResumeButton: ButtonConfig = ButtonConfig(title: "暂停", isEnabled: false),
+        endConversationButton: ButtonConfig = ButtonConfig(title: "结束对话", isEnabled: false),
+        reconnectButton: ButtonConfig = ButtonConfig(title: "设备", isEnabled: false),
+        outboxButton: ButtonConfig = ButtonConfig(title: "待发", isEnabled: false),
+        diagnosticsButton: ButtonConfig = ButtonConfig(title: "设置", isEnabled: false),
+        tipsText: String? = nil,
+        isRefreshingBattery: Bool = false
     ) {
         self.deviceName = deviceName
         self.deviceSubtitle = deviceSubtitle
@@ -188,39 +192,43 @@ public struct WatchDashboardViewState: Equatable {
         self.outboxButton = outboxButton
         self.diagnosticsButton = diagnosticsButton
         self.tipsText = tipsText
+        self.isRefreshingBattery = isRefreshingBattery
     }
 }
 
 // MARK: - 语义动作枚举 (Semantic Actions)
 
-/// 仪表盘向外部调发出的语义动作（供 Codex 接线至 WearableService / WatchVoiceSession / BLEProbe）
+/// 仪表盘向外部发出的语义动作（供外部接线）
 public enum WatchDashboardAction: Equatable {
-    /// 触发配对或重连设备
+    /// 触发配对或切换设备
     case reconnectOrAddDevice
-    /// 主录音操作 (根据当前状态对应：开始说话 / 发送本条保留会话)
+    /// 主录音操作 (开始录音 / 发送)
     case primaryAction
-    /// 暂停或继续当前录音草稿
+    /// 暂停或继续当前录音
     case pauseResumeRecording
-    /// 明确结束当前会话 (归档并关闭逻辑对话)
+    /// 结束当前对话
     case endConversation
-    /// 打开录音待发箱与离线文件恢复
+    /// 打开待发箱
     case openOutbox
-    /// 打开穿戴设备高级诊断页面 (DeviceDiagnosticsViewController)
+    /// 打开设备设置与诊断
     case openDiagnostics
+    /// 刷新手表电量
+    case refreshBattery
 }
 
 // MARK: - 仪表盘视图主类 (WatchDashboardView)
 
-/// 纯 UIKit 编写的 Relay 手表控制面板
-/// 支持暗色模式、动态字体、VoiceOver 无障碍及全面屏/小屏安全区
+/// 纯 UIKit 编写的 relay watch 控制面板
+/// 固定暗黑主题 (#0a0b0d)，成熟商业产品风格，紧凑克制。
+/// 支持 320pt 窄屏、动态字体、VoiceOver 无障碍，无任何业务推导或副作用。
 public final class WatchDashboardView: UIView {
 
     // MARK: - 外部动作闭包
 
-    /// 综合语义事件回调（推荐调用方接入）
+    /// 综合语义事件回调（所有用户操作统一由此闭包外发）
     public var onAction: ((WatchDashboardAction) -> Void)?
 
-    /// 独立语义动作闭包（可选接入）
+    /// 兼容旧闭包声明（保留声明供兼容，但不调用以防重复触发双重操作）
     public var onReconnectOrAddDevice: (() -> Void)?
     public var onPrimaryAction: (() -> Void)?
     public var onPauseResumeRecording: (() -> Void)?
@@ -228,71 +236,56 @@ public final class WatchDashboardView: UIView {
     public var onOpenOutbox: (() -> Void)?
     public var onOpenDiagnostics: (() -> Void)?
 
-    // MARK: - 私有 UI 组件
+    // MARK: - 私有常量色彩 (固定暗黑主题)
+
+    private static let darkBg = UIColor(red: 10/255, green: 11/255, blue: 13/255, alpha: 1.0)        // #0a0b0d
+    private static let surfaceBg = UIColor(red: 18/255, green: 20/255, blue: 24/255, alpha: 1.0)     // #121418
+    private static let cardBorder = UIColor(red: 32/255, green: 36/255, blue: 44/255, alpha: 1.0)    // #20242c
+    private static let textMuted = UIColor(red: 138/255, green: 145/255, blue: 158/255, alpha: 1.0) // #8a919e
+    private static let textTertiary = UIColor(red: 86/255, green: 92/255, blue: 105/255, alpha: 1.0)// #565c69
+
+    // MARK: - 布局容器
 
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let contentStack = UIStackView()
 
-    // 顶部设备信息卡片
-    private let deviceHeaderCard = UIView()
-    private let deviceIconImageView = UIImageView()
+    // MARK: 1. 顶部设备与连接状态
+    private let headerContainer = UIView()
     private let deviceNameLabel = UILabel()
     private let deviceSubtitleLabel = UILabel()
-    private let quickReconnectButton = UIButton(type: .system)
+    private let connectionPill = UIView()
+    private let connectionDot = UIView()
+    private let connectionStatusLabel = UILabel()
 
-    // 主区域 1：连接与电量卡片
-    private let statusCard = UIView()
-    private let connectionIndicatorDot = UIView()
-    private let statusTitleLabel = UILabel()
-    private let statusDetailLabel = UILabel()
-    private let statusCardDivider = UIView()
+    // MARK: 2. 紧凑电量栏
+    private let batteryCard = UIView()
     private let batteryIconImageView = UIImageView()
-    private let batteryTitleLabel = UILabel()
-    private let batteryDetailLabel = UILabel()
+    private let batteryLevelLabel = UILabel()
+    private let batteryBadgePill = UIView()
     private let batteryBadgeLabel = UILabel()
+    private let batteryDetailLabel = UILabel()
+    private let refreshBatteryButton = UIButton(type: .system)
 
-    // 主区域 2：真实录音状态与计时器卡片
+    // MARK: 3. 主要录音区域
     private let recordingCard = UIView()
-    private let recordingPillBadge = UIView()
-    private let recordingPillDot = UIView()
-    private let recordingPillLabel = UILabel()
+    private let recordingStatusPill = UIView()
+    private let recordingStatusDot = UIView()
+    private let recordingStatusLabel = UILabel()
     private let recordingTimeLabel = UILabel()
     private let recordingDetailLabel = UILabel()
-    private let waveformContainer = UIStackView()
-    private var waveformBars: [UIView] = []
-
-    // 主区域 3：待发箱概览卡片
-    private let outboxCard = UIView()
-    private let outboxIconImageView = UIImageView()
-    private let outboxTitleLabel = UILabel()
-    private let outboxBadgeLabel = UILabel()
-    private let outboxDetailLabel = UILabel()
-    private let outboxChevronImageView = UIImageView()
-
-    // 次区域：对话操作卡片
-    private let conversationControlsCard = UIView()
-    private let conversationSectionHeader = UILabel()
     private let primaryActionButton = UIButton(type: .system)
     private let secondaryActionsStack = UIStackView()
     private let pauseResumeButton = UIButton(type: .system)
     private let endConversationButton = UIButton(type: .system)
-    private let conversationHintLabel = UILabel()
 
-    // 次区域：设备管理与诊断入口卡片
-    private let toolsCard = UIView()
-    private let toolsSectionHeader = UILabel()
-    private let reconnectRowButton = ActionRowButton()
-    private let outboxRowButton = ActionRowButton()
-    private let diagnosticsRowButton = ActionRowButton()
+    // MARK: 4. 底部入口行
+    private let footerRow = UIStackView()
+    private let deviceEntryButton = CompactEntryButton()
+    private let outboxEntryButton = CompactEntryButton()
+    private let settingsEntryButton = CompactEntryButton()
 
-    // 底部硬件手势提示卡片
-    private let tipsCard = UIView()
-    private let tipsIconImageView = UIImageView()
-    private let tipsTitleLabel = UILabel()
-    private let tipsContentLabel = UILabel()
-
-    // 当前渲染状态备份
+    // 当前状态备份
     private var currentState: WatchDashboardViewState?
 
     // MARK: - 初始化
@@ -313,177 +306,187 @@ public final class WatchDashboardView: UIView {
 
     // MARK: - 单向状态渲染 (configure)
 
-    /// 将状态结构体单向绑定至界面组件
+    /// 将状态结构体单向绑定至界面组件，绝不读取单例或推导业务
     public func configure(state: WatchDashboardViewState) {
         self.currentState = state
 
-        // 1. 设备基本信息
+        // 1. 顶部设备名称与副标题
         deviceNameLabel.text = state.deviceName
-        deviceSubtitleLabel.text = state.deviceSubtitle ?? " "
-        deviceSubtitleLabel.isHidden = (state.deviceSubtitle == nil)
+        if let subtitle = state.deviceSubtitle,
+           !subtitle.isEmpty,
+           !subtitle.contains("按键控制"),
+           !subtitle.contains("手机采音") {
+            deviceSubtitleLabel.text = subtitle
+            deviceSubtitleLabel.isHidden = false
+        } else {
+            deviceSubtitleLabel.isHidden = true
+        }
 
-        // 2. 连接状态
-        statusTitleLabel.text = state.statusTitle
-        statusDetailLabel.text = state.statusDetail
-        updateConnectionStateUI(state.connectionState)
+        // 2. 顶部连接状态 (小圆点与精简文字，不重复“就绪”)
+        updateConnectionStateUI(state.connectionState, rawTitle: state.statusTitle)
 
-        // 3. 诚实电量与充电呈现
-        batteryTitleLabel.text = state.batteryText
-        batteryDetailLabel.text = state.batteryDetail
-        updateBatteryStateUI(status: state.batteryStatus, isCharging: state.isCharging, text: state.batteryText)
+        // 3. 紧凑电量与充电状态
+        batteryLevelLabel.text = state.batteryText
+        updateBatteryStateUI(
+            status: state.batteryStatus,
+            isCharging: state.isCharging,
+            detail: state.batteryDetail,
+            isRefreshing: state.isRefreshingBattery
+        )
 
-        // 4. 录音状态与计时
+        // 4. 主要录音状态与时长
         recordingTimeLabel.text = state.recordingTime
-        recordingDetailLabel.text = state.recordingDetail
-        updateRecordingStateUI(state: state.recordingState, isRecording: state.isRecording, isPaused: state.isPaused, title: state.recordingTitle)
+        updateRecordingStateUI(
+            state: state.recordingState,
+            isRecording: state.isRecording,
+            isPaused: state.isPaused,
+            rawTitle: state.recordingTitle,
+            rawDetail: state.recordingDetail
+        )
 
-        // 5. 待发箱状态
-        outboxTitleLabel.text = state.pendingText
-        if let detail = state.pendingDetail, !detail.isEmpty {
-            outboxDetailLabel.text = detail
-            outboxDetailLabel.isHidden = false
-        } else {
-            outboxDetailLabel.isHidden = true
-        }
-        if state.pendingCount > 0 {
-            outboxBadgeLabel.text = "\(state.pendingCount) 条待发"
-            outboxBadgeLabel.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.18)
-            outboxBadgeLabel.textColor = .systemOrange
-            outboxBadgeLabel.isHidden = false
-        } else {
-            outboxBadgeLabel.text = "暂无待发"
-            outboxBadgeLabel.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
-            outboxBadgeLabel.textColor = .systemGreen
-            outboxBadgeLabel.isHidden = false
-        }
+        // 5. 主操作按钮（开始录音 / 发送）
+        updatePrimaryActionButton(
+            config: state.primaryButton,
+            isRecording: state.isRecording,
+            isPaused: state.isPaused
+        )
 
-        // 6. 按钮配置更新
-        // 主操作按钮
-        primaryActionButton.setTitle(state.primaryButton.title, for: .normal)
-        primaryActionButton.isEnabled = state.primaryButton.isEnabled
-        primaryActionButton.isHidden = state.primaryButton.isHidden
-        updatePrimaryActionButtonStyle(isRecording: state.isRecording, isPaused: state.isPaused)
+        // 6. 次级操作按钮（暂停/继续、结束对话）
+        updateSecondaryButtons(
+            pauseResume: state.pauseResumeButton,
+            endConversation: state.endConversationButton,
+            isPaused: state.isPaused
+        )
 
-        // 暂停 / 继续按钮
-        pauseResumeButton.setTitle(state.pauseResumeButton.title, for: .normal)
-        pauseResumeButton.isEnabled = state.pauseResumeButton.isEnabled
-        pauseResumeButton.isHidden = state.pauseResumeButton.isHidden
+        // 7. 底部入口行（设备、待发、设置）
+        updateFooterRow(state: state)
+        refreshBatteryButton.isEnabled = state.connectionState == .connected && !state.isRefreshingBattery
 
-        // 结束对话按钮
-        endConversationButton.setTitle(state.endConversationButton.title, for: .normal)
-        endConversationButton.isEnabled = state.endConversationButton.isEnabled
-        endConversationButton.isHidden = state.endConversationButton.isHidden
-
-        // 次区域行按钮配置
-        reconnectRowButton.titleLabel.text = state.reconnectButton.title
-        reconnectRowButton.isEnabled = state.reconnectButton.isEnabled
-        reconnectRowButton.isHidden = state.reconnectButton.isHidden
-        quickReconnectButton.isEnabled = state.reconnectButton.isEnabled
-
-        outboxRowButton.titleLabel.text = state.outboxButton.title
-        outboxRowButton.isEnabled = state.outboxButton.isEnabled
-        outboxRowButton.isHidden = state.outboxButton.isHidden
-        if state.pendingCount > 0 {
-            outboxRowButton.badgeLabel.text = "\(state.pendingCount)"
-            outboxRowButton.badgeLabel.isHidden = false
-        } else {
-            outboxRowButton.badgeLabel.isHidden = true
-        }
-
-        diagnosticsRowButton.titleLabel.text = state.diagnosticsButton.title
-        diagnosticsRowButton.isEnabled = state.diagnosticsButton.isEnabled
-        diagnosticsRowButton.isHidden = state.diagnosticsButton.isHidden
-
-        // 7. 提示文案
-        if let tips = state.tipsText, !tips.isEmpty {
-            tipsContentLabel.text = tips
-            tipsCard.isHidden = false
-        } else {
-            tipsCard.isHidden = true
-        }
-
-        // 8. 辅助功能无障碍属性刷新
-        updateAccessibilityProperties(state: state)
+        // 8. VoiceOver 无障碍属性刷新
+        updateAccessibility(state: state)
     }
 
     // MARK: - 内部视觉辅助渲染
 
-    private func updateConnectionStateUI(_ state: WatchDashboardViewState.ConnectionState) {
+    private func updateConnectionStateUI(_ state: WatchDashboardViewState.ConnectionState, rawTitle: String) {
+        let cleanTitle: String
+        if rawTitle.contains("就绪") {
+            switch state {
+            case .connected: cleanTitle = "已连接"
+            case .connecting: cleanTitle = "连接中"
+            case .disconnected: cleanTitle = "未连接"
+            case .error: cleanTitle = "连接异常"
+            }
+        } else if !rawTitle.isEmpty {
+            cleanTitle = rawTitle
+        } else {
+            switch state {
+            case .connected: cleanTitle = "已连接"
+            case .connecting: cleanTitle = "连接中"
+            case .disconnected: cleanTitle = "未连接"
+            case .error: cleanTitle = "连接异常"
+            }
+        }
+        connectionStatusLabel.text = cleanTitle
+
         switch state {
         case .connected:
-            connectionIndicatorDot.backgroundColor = .systemGreen
-            statusTitleLabel.textColor = .label
+            connectionDot.backgroundColor = .systemGreen
+            connectionStatusLabel.textColor = .systemGreen
+            connectionPill.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.12)
         case .connecting:
-            connectionIndicatorDot.backgroundColor = .systemOrange
-            statusTitleLabel.textColor = .systemOrange
+            connectionDot.backgroundColor = .systemOrange
+            connectionStatusLabel.textColor = .systemOrange
+            connectionPill.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
         case .disconnected:
-            connectionIndicatorDot.backgroundColor = .systemGray
-            statusTitleLabel.textColor = .secondaryLabel
+            connectionDot.backgroundColor = Self.textMuted
+            connectionStatusLabel.textColor = Self.textMuted
+            connectionPill.backgroundColor = UIColor.white.withAlphaComponent(0.06)
         case .error:
-            connectionIndicatorDot.backgroundColor = .systemRed
-            statusTitleLabel.textColor = .systemRed
+            connectionDot.backgroundColor = .systemRed
+            connectionStatusLabel.textColor = .systemRed
+            connectionPill.backgroundColor = UIColor.systemRed.withAlphaComponent(0.12)
         }
     }
 
-    private func updateBatteryStateUI(status: WatchDashboardViewState.BatteryStatus, isCharging: Bool, text: String) {
-        if isCharging {
+    private func updateBatteryStateUI(
+        status: WatchDashboardViewState.BatteryStatus,
+        isCharging: Bool,
+        detail: String,
+        isRefreshing: Bool
+    ) {
+        // 图标与标签逻辑
+        if isCharging || status == .charging {
             batteryIconImageView.image = UIImage(systemName: "battery.100.bolt")
             batteryIconImageView.tintColor = .systemGreen
+            batteryBadgePill.isHidden = false
+            batteryBadgePill.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
             batteryBadgeLabel.text = "充电中"
-            batteryBadgeLabel.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
             batteryBadgeLabel.textColor = .systemGreen
-            batteryBadgeLabel.isHidden = false
-            return
+        } else {
+            switch status {
+            case .charging:
+                batteryIconImageView.image = UIImage(systemName: "battery.100.bolt")
+                batteryIconImageView.tintColor = .systemGreen
+                batteryBadgePill.isHidden = false
+                batteryBadgePill.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
+                batteryBadgeLabel.text = "充电中"
+                batteryBadgeLabel.textColor = .systemGreen
+
+            case .normal:
+                batteryIconImageView.image = UIImage(systemName: "battery.75")
+                batteryIconImageView.tintColor = .systemGreen
+                batteryBadgePill.isHidden = true
+
+            case .low:
+                batteryIconImageView.image = UIImage(systemName: "battery.25")
+                batteryIconImageView.tintColor = .systemRed
+                batteryBadgePill.isHidden = false
+                batteryBadgePill.backgroundColor = UIColor.systemRed.withAlphaComponent(0.15)
+                batteryBadgeLabel.text = "低电量"
+                batteryBadgeLabel.textColor = .systemRed
+
+            case .stale:
+                batteryIconImageView.image = UIImage(systemName: "clock.badge.exclamationmark")
+                batteryIconImageView.tintColor = .systemOrange
+                batteryBadgePill.isHidden = false
+                batteryBadgePill.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.15)
+                batteryBadgeLabel.text = "已过期"
+                batteryBadgeLabel.textColor = .systemOrange
+
+            case .unknown:
+                batteryIconImageView.image = UIImage(systemName: "questionmark.circle")
+                batteryIconImageView.tintColor = Self.textMuted
+                batteryBadgePill.isHidden = true
+
+            case .disconnected:
+                batteryIconImageView.image = UIImage(systemName: "battery.slash")
+                batteryIconImageView.tintColor = Self.textMuted
+                batteryBadgePill.isHidden = true
+            }
         }
 
-        switch status {
-        case .charging:
-            batteryIconImageView.image = UIImage(systemName: "battery.100.bolt")
-            batteryIconImageView.tintColor = .systemGreen
-            batteryBadgeLabel.text = "充电中"
-            batteryBadgeLabel.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .systemGreen
-            batteryBadgeLabel.isHidden = false
+        batteryDetailLabel.text = detail
+        batteryDetailLabel.isHidden = detail.isEmpty
 
-        case .normal:
-            batteryIconImageView.image = UIImage(systemName: "battery.75")
-            batteryIconImageView.tintColor = .systemGreen
-            batteryBadgeLabel.text = "正常"
-            batteryBadgeLabel.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .systemGreen
-            batteryBadgeLabel.isHidden = false
+        // 刷新按钮状态与旋转动画
+        setBatteryRefreshing(isRefreshing)
+    }
 
-        case .low:
-            batteryIconImageView.image = UIImage(systemName: "battery.25")
-            batteryIconImageView.tintColor = .systemRed
-            batteryBadgeLabel.text = "低电量"
-            batteryBadgeLabel.backgroundColor = UIColor.systemRed.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .systemRed
-            batteryBadgeLabel.isHidden = false
-
-        case .stale:
-            batteryIconImageView.image = UIImage(systemName: "clock.badge.exclamationmark")
-            batteryIconImageView.tintColor = .systemOrange
-            batteryBadgeLabel.text = "数据已过期"
-            batteryBadgeLabel.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .systemOrange
-            batteryBadgeLabel.isHidden = false
-
-        case .unknown:
-            batteryIconImageView.image = UIImage(systemName: "questionmark.circle")
-            batteryIconImageView.tintColor = .systemGray
-            batteryBadgeLabel.text = "电量未知"
-            batteryBadgeLabel.backgroundColor = UIColor.systemGray.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .secondaryLabel
-            batteryBadgeLabel.isHidden = false
-
-        case .disconnected:
-            batteryIconImageView.image = UIImage(systemName: "battery.slash")
-            batteryIconImageView.tintColor = .systemGray
-            batteryBadgeLabel.text = "未连接"
-            batteryBadgeLabel.backgroundColor = UIColor.systemGray.withAlphaComponent(0.15)
-            batteryBadgeLabel.textColor = .secondaryLabel
-            batteryBadgeLabel.isHidden = false
+    private func setBatteryRefreshing(_ refreshing: Bool) {
+        if refreshing {
+            refreshBatteryButton.isEnabled = false
+            if refreshBatteryButton.layer.animation(forKey: "batterySpinAnimation") == nil {
+                let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+                spin.toValue = NSNumber(value: Double.pi * 2.0)
+                spin.duration = 0.9
+                spin.isCumulative = true
+                spin.repeatCount = .infinity
+                refreshBatteryButton.layer.add(spin, forKey: "batterySpinAnimation")
+            }
+        } else {
+            refreshBatteryButton.isEnabled = true
+            refreshBatteryButton.layer.removeAnimation(forKey: "batterySpinAnimation")
         }
     }
 
@@ -491,649 +494,479 @@ public final class WatchDashboardView: UIView {
         state: WatchDashboardViewState.RecordingState,
         isRecording: Bool,
         isPaused: Bool,
-        title: String
+        rawTitle: String,
+        rawDetail: String
     ) {
-        recordingPillLabel.text = title
-
+        // 录音状态简明指示
         switch state {
         case .recording:
-            recordingPillBadge.backgroundColor = UIColor.systemRed.withAlphaComponent(0.15)
-            recordingPillLabel.textColor = .systemRed
-            recordingPillDot.backgroundColor = .systemRed
-            recordingTimeLabel.textColor = .label
-            setWaveformActive(true)
+            recordingStatusDot.backgroundColor = .systemRed
+            recordingStatusLabel.text = "正在录音"
+            recordingStatusLabel.textColor = .systemRed
+            recordingStatusPill.backgroundColor = UIColor.systemRed.withAlphaComponent(0.12)
+            recordingTimeLabel.textColor = .white
 
         case .pausedDraft:
-            recordingPillBadge.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.15)
-            recordingPillLabel.textColor = .systemOrange
-            recordingPillDot.backgroundColor = .systemOrange
+            recordingStatusDot.backgroundColor = .systemOrange
+            recordingStatusLabel.text = "录音已暂停"
+            recordingStatusLabel.textColor = .systemOrange
+            recordingStatusPill.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
             recordingTimeLabel.textColor = .systemOrange
-            setWaveformActive(false)
 
         case .transmitting:
-            recordingPillBadge.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
-            recordingPillLabel.textColor = .systemBlue
-            recordingPillDot.backgroundColor = .systemBlue
-            recordingTimeLabel.textColor = .secondaryLabel
-            setWaveformActive(false)
+            recordingStatusDot.backgroundColor = .systemBlue
+            recordingStatusLabel.text = "正在发送"
+            recordingStatusLabel.textColor = .systemBlue
+            recordingStatusPill.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.12)
+            recordingTimeLabel.textColor = Self.textMuted
 
         case .idle:
-            recordingPillBadge.backgroundColor = UIColor.secondarySystemFill
-            recordingPillLabel.textColor = .secondaryLabel
-            recordingPillDot.backgroundColor = .systemGray
-            recordingTimeLabel.textColor = .secondaryLabel
-            setWaveformActive(false)
+            recordingStatusDot.backgroundColor = Self.textTertiary
+            recordingStatusLabel.text = "空闲待命"
+            recordingStatusLabel.textColor = Self.textMuted
+            recordingStatusPill.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+            recordingTimeLabel.textColor = Self.textTertiary
         }
+
+        if !rawTitle.isEmpty { recordingStatusLabel.text = rawTitle }
+        recordingDetailLabel.text = rawDetail
+        recordingDetailLabel.isHidden = rawDetail.isEmpty
+        recordingDetailLabel.textColor = .systemRed
     }
 
-    private func updatePrimaryActionButtonStyle(isRecording: Bool, isPaused: Bool) {
+    private func updatePrimaryActionButton(
+        config: WatchDashboardViewState.ButtonConfig,
+        isRecording: Bool,
+        isPaused: Bool
+    ) {
+        primaryActionButton.setTitle(config.title, for: .normal)
+        primaryActionButton.isEnabled = config.isEnabled
+        primaryActionButton.isHidden = config.isHidden
+
         if isRecording {
             primaryActionButton.backgroundColor = .systemGreen
             primaryActionButton.setTitleColor(.white, for: .normal)
             primaryActionButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
+            primaryActionButton.tintColor = .white
         } else if isPaused {
             primaryActionButton.backgroundColor = .systemBlue
             primaryActionButton.setTitleColor(.white, for: .normal)
             primaryActionButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
+            primaryActionButton.tintColor = .white
         } else {
-            primaryActionButton.backgroundColor = .systemBlue
-            primaryActionButton.setTitleColor(.white, for: .normal)
+            primaryActionButton.backgroundColor = config.isEnabled ? .systemBlue : UIColor(red: 28/255, green: 30/255, blue: 36/255, alpha: 1.0)
+            primaryActionButton.setTitleColor(config.isEnabled ? .white : Self.textTertiary, for: .normal)
             primaryActionButton.setImage(UIImage(systemName: "mic.fill"), for: .normal)
-        }
-        primaryActionButton.tintColor = .white
-    }
-
-    private func setWaveformActive(_ active: Bool) {
-        let heights: [CGFloat] = active ? [14, 26, 32, 20, 10] : [6, 6, 6, 6, 6]
-        for (index, bar) in waveformBars.enumerated() {
-            guard index < heights.count else { break }
-            UIView.animate(withDuration: 0.25) {
-                bar.constraints.first { $0.firstAttribute == .height }?.constant = heights[index]
-                bar.backgroundColor = active ? .systemRed : .tertiaryLabel
-            }
+            primaryActionButton.tintColor = config.isEnabled ? .white : Self.textTertiary
         }
     }
 
-    // MARK: - 无障碍 VoiceOver
+    private func updateSecondaryButtons(
+        pauseResume: WatchDashboardViewState.ButtonConfig,
+        endConversation: WatchDashboardViewState.ButtonConfig,
+        isPaused: Bool
+    ) {
+        // 暂停 / 继续按钮：简短明确
+        let pauseTitle: String
+        if isPaused || pauseResume.title.contains("继续") {
+            pauseTitle = "继续"
+            pauseResumeButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+        } else {
+            pauseTitle = "暂停"
+            pauseResumeButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
+        }
+        pauseResumeButton.setTitle(pauseTitle, for: .normal)
+        pauseResumeButton.isEnabled = pauseResume.isEnabled
+        pauseResumeButton.isHidden = pauseResume.isHidden
 
-    private func updateAccessibilityProperties(state: WatchDashboardViewState) {
-        // 设备卡片
-        deviceHeaderCard.isAccessibilityElement = true
-        deviceHeaderCard.accessibilityLabel = "\(state.deviceName)，\(state.deviceSubtitle ?? "")"
-        deviceHeaderCard.accessibilityTraits = .header
-
-        // 状态卡片
-        statusCard.isAccessibilityElement = true
-        statusCard.accessibilityLabel = "设备连接状态：\(state.statusTitle)，\(state.statusDetail)。当前电量：\(state.batteryText)，\(state.batteryDetail)"
-
-        // 录音卡片
-        recordingCard.isAccessibilityElement = true
-        recordingCard.accessibilityLabel = "录音状态：\(state.recordingTitle)，录音时长：\(state.recordingTime)，\(state.recordingDetail)"
-
-        // 待发箱卡片
-        outboxCard.isAccessibilityElement = true
-        outboxCard.accessibilityLabel = "待发箱：\(state.pendingText)，\(state.pendingCount) 条待发。\(state.pendingDetail ?? "")"
-        outboxCard.accessibilityHint = "轻点两下打开待发箱与恢复"
-        outboxCard.accessibilityTraits = .button
-
-        // 按钮 hints
-        primaryActionButton.accessibilityHint = state.isRecording ? "发送当前录音切片并保留对话会话" : "开启麦克风录制语音"
-        pauseResumeButton.accessibilityHint = state.isRecording ? "暂停当前录音并封口草稿" : "继续未完成的录音草稿"
-        endConversationButton.accessibilityHint = "结束并归档当前整轮逻辑对话"
+        // 结束对话按钮：简短明确，无小作文
+        let endTitle = endConversation.title.contains("结束") ? "结束对话" : endConversation.title
+        endConversationButton.setTitle(endTitle, for: .normal)
+        endConversationButton.isEnabled = endConversation.isEnabled
+        endConversationButton.isHidden = endConversation.isHidden
     }
 
-    // MARK: - UI 构建与排版
+    private func updateFooterRow(state: WatchDashboardViewState) {
+        // 设备入口
+        deviceEntryButton.isEnabled = state.reconnectButton.isEnabled
+        deviceEntryButton.isHidden = state.reconnectButton.isHidden
+
+        // 待发入口 (仅在有待发时展示数量徽标，无待发不显示徽标也不加宣传卡)
+        outboxEntryButton.isEnabled = state.outboxButton.isEnabled
+        outboxEntryButton.isHidden = state.outboxButton.isHidden
+        if state.pendingCount > 0 {
+            outboxEntryButton.setBadge("\(state.pendingCount)")
+        } else {
+            outboxEntryButton.setBadge(nil)
+        }
+
+        // 设置入口
+        settingsEntryButton.isEnabled = state.diagnosticsButton.isEnabled
+        settingsEntryButton.isHidden = state.diagnosticsButton.isHidden
+    }
+
+    // MARK: - VoiceOver 无障碍
+
+    private func updateAccessibility(state: WatchDashboardViewState) {
+        headerContainer.isAccessibilityElement = true
+        headerContainer.accessibilityLabel = "\(state.deviceName)，连接状态：\(connectionStatusLabel.text ?? state.statusTitle)"
+        headerContainer.accessibilityTraits = .header
+
+        batteryCard.isAccessibilityElement = false
+        batteryCard.accessibilityLabel = "电量：\(state.batteryText)，\(state.batteryDetail)"
+
+        refreshBatteryButton.accessibilityLabel = "刷新设备电量"
+        refreshBatteryButton.accessibilityTraits = .button
+
+        recordingCard.isAccessibilityElement = false
+        recordingCard.accessibilityLabel = "录音状态：\(recordingStatusLabel.text ?? "")，时长：\(state.recordingTime)"
+
+        primaryActionButton.accessibilityLabel = state.primaryButton.title
+        pauseResumeButton.accessibilityLabel = state.isPaused ? "继续录音" : "暂停录音"
+        endConversationButton.accessibilityLabel = "结束当前对话"
+
+        deviceEntryButton.accessibilityLabel = "切换或管理设备"
+        outboxEntryButton.accessibilityLabel = state.pendingCount > 0 ? "待发箱，共 \(state.pendingCount) 条待发" : "待发箱"
+        settingsEntryButton.accessibilityLabel = "设备设置与诊断"
+    }
+
+    // MARK: - UI 构建与排版 (AutoLayout)
 
     private func setupViews() {
-        backgroundColor = .systemGroupedBackground
+        backgroundColor = Self.darkBg
+        overrideUserInterfaceStyle = .dark
 
-        // 滚动容器支持小屏和动态字体
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = true
         scrollView.showsVerticalScrollIndicator = true
+        scrollView.backgroundColor = Self.darkBg
         addSubview(scrollView)
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.backgroundColor = Self.darkBg
         scrollView.addSubview(contentView)
 
         contentStack.axis = .vertical
-        contentStack.spacing = 16
+        contentStack.spacing = 14
         contentStack.alignment = .fill
         contentStack.distribution = .fill
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(contentStack)
 
-        buildDeviceHeaderCard()
-        buildStatusCard()
+        buildHeader()
+        buildBatteryCard()
         buildRecordingCard()
-        buildOutboxCard()
-        buildConversationControlsCard()
-        buildToolsCard()
-        buildTipsCard()
+        buildFooterRow()
 
-        contentStack.addArrangedSubview(deviceHeaderCard)
-        contentStack.addArrangedSubview(statusCard)
+        contentStack.addArrangedSubview(headerContainer)
+        contentStack.addArrangedSubview(batteryCard)
         contentStack.addArrangedSubview(recordingCard)
-        contentStack.addArrangedSubview(outboxCard)
-        contentStack.addArrangedSubview(conversationControlsCard)
-        contentStack.addArrangedSubview(toolsCard)
-        contentStack.addArrangedSubview(tipsCard)
+        contentStack.addArrangedSubview(footerRow)
     }
 
-    private func buildDeviceHeaderCard() {
-        styleCard(deviceHeaderCard)
+    private func buildHeader() {
+        headerContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        deviceIconImageView.image = UIImage(systemName: "applewatch.radiowaves.left.and.right")
-        deviceIconImageView.tintColor = .systemBlue
-        deviceIconImageView.contentMode = .scaleAspectFit
-        deviceIconImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        deviceNameLabel.font = .preferredFont(forTextStyle: .title2)
+        deviceNameLabel.font = .systemFont(ofSize: 20, weight: .bold)
         deviceNameLabel.adjustsFontForContentSizeCategory = true
-        deviceNameLabel.textColor = .label
-        deviceNameLabel.numberOfLines = 1
+        deviceNameLabel.textColor = .white
+        deviceNameLabel.text = "relay watch"
         deviceNameLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        deviceSubtitleLabel.font = .preferredFont(forTextStyle: .footnote)
+        deviceSubtitleLabel.font = .preferredFont(forTextStyle: .caption1)
         deviceSubtitleLabel.adjustsFontForContentSizeCategory = true
-        deviceSubtitleLabel.textColor = .secondaryLabel
-        deviceSubtitleLabel.numberOfLines = 0
+        deviceSubtitleLabel.textColor = Self.textMuted
+        deviceSubtitleLabel.numberOfLines = 1
+        deviceSubtitleLabel.isHidden = true
         deviceSubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        quickReconnectButton.setTitle("重连设备", for: .normal)
-        quickReconnectButton.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
-        quickReconnectButton.titleLabel?.adjustsFontForContentSizeCategory = true
-        quickReconnectButton.backgroundColor = .secondarySystemFill
-        quickReconnectButton.layer.cornerRadius = 14
-        quickReconnectButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
-        quickReconnectButton.translatesAutoresizingMaskIntoConstraints = false
+        let titleStack = UIStackView(arrangedSubviews: [deviceNameLabel, deviceSubtitleLabel])
+        titleStack.axis = .vertical
+        titleStack.spacing = 2
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let labelStack = UIStackView(arrangedSubviews: [deviceNameLabel, deviceSubtitleLabel])
-        labelStack.axis = .vertical
-        labelStack.spacing = 2
-        labelStack.translatesAutoresizingMaskIntoConstraints = false
+        connectionPill.layer.cornerRadius = 10
+        connectionPill.clipsToBounds = true
+        connectionPill.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        connectionPill.translatesAutoresizingMaskIntoConstraints = false
 
-        deviceHeaderCard.addSubview(deviceIconImageView)
-        deviceHeaderCard.addSubview(labelStack)
-        deviceHeaderCard.addSubview(quickReconnectButton)
+        connectionDot.layer.cornerRadius = 3.5
+        connectionDot.clipsToBounds = true
+        connectionDot.backgroundColor = Self.textMuted
+        connectionDot.translatesAutoresizingMaskIntoConstraints = false
+
+        connectionStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        connectionStatusLabel.adjustsFontForContentSizeCategory = true
+        connectionStatusLabel.textColor = Self.textMuted
+        connectionStatusLabel.text = "未连接"
+        connectionStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let pillStack = UIStackView(arrangedSubviews: [connectionDot, connectionStatusLabel])
+        pillStack.axis = .horizontal
+        pillStack.spacing = 6
+        pillStack.alignment = .center
+        pillStack.translatesAutoresizingMaskIntoConstraints = false
+
+        connectionPill.addSubview(pillStack)
+        headerContainer.addSubview(titleStack)
+        headerContainer.addSubview(connectionPill)
 
         NSLayoutConstraint.activate([
-            deviceIconImageView.leadingAnchor.constraint(equalTo: deviceHeaderCard.leadingAnchor, constant: 16),
-            deviceIconImageView.centerYAnchor.constraint(equalTo: deviceHeaderCard.centerYAnchor),
-            deviceIconImageView.widthAnchor.constraint(equalToConstant: 36),
-            deviceIconImageView.heightAnchor.constraint(equalToConstant: 36),
+            pillStack.topAnchor.constraint(equalTo: connectionPill.topAnchor, constant: 4),
+            pillStack.bottomAnchor.constraint(equalTo: connectionPill.bottomAnchor, constant: -4),
+            pillStack.leadingAnchor.constraint(equalTo: connectionPill.leadingAnchor, constant: 8),
+            pillStack.trailingAnchor.constraint(equalTo: connectionPill.trailingAnchor, constant: -8),
 
-            labelStack.leadingAnchor.constraint(equalTo: deviceIconImageView.trailingAnchor, constant: 12),
-            labelStack.topAnchor.constraint(equalTo: deviceHeaderCard.topAnchor, constant: 14),
-            labelStack.bottomAnchor.constraint(equalTo: deviceHeaderCard.bottomAnchor, constant: -14),
-            labelStack.trailingAnchor.constraint(lessThanOrEqualTo: quickReconnectButton.leadingAnchor, constant: -8),
+            connectionDot.widthAnchor.constraint(equalToConstant: 7),
+            connectionDot.heightAnchor.constraint(equalToConstant: 7),
 
-            quickReconnectButton.trailingAnchor.constraint(equalTo: deviceHeaderCard.trailingAnchor, constant: -16),
-            quickReconnectButton.centerYAnchor.constraint(equalTo: deviceHeaderCard.centerYAnchor),
-            quickReconnectButton.heightAnchor.constraint(equalToConstant: 32)
+            titleStack.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
+            titleStack.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 4),
+            titleStack.bottomAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -4),
+            titleStack.trailingAnchor.constraint(lessThanOrEqualTo: connectionPill.leadingAnchor, constant: -8),
+
+            connectionPill.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor),
+            connectionPill.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor)
         ])
     }
 
-    private func buildStatusCard() {
-        styleCard(statusCard)
+    private func buildBatteryCard() {
+        stylePanel(batteryCard)
 
-        // 连接状态行
-        connectionIndicatorDot.layer.cornerRadius = 5
-        connectionIndicatorDot.clipsToBounds = true
-        connectionIndicatorDot.backgroundColor = .systemGreen
-        connectionIndicatorDot.translatesAutoresizingMaskIntoConstraints = false
-
-        statusTitleLabel.font = .preferredFont(forTextStyle: .headline)
-        statusTitleLabel.adjustsFontForContentSizeCategory = true
-        statusTitleLabel.textColor = .label
-        statusTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        statusDetailLabel.font = .preferredFont(forTextStyle: .subheadline)
-        statusDetailLabel.adjustsFontForContentSizeCategory = true
-        statusDetailLabel.textColor = .secondaryLabel
-        statusDetailLabel.numberOfLines = 0
-        statusDetailLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let connectionTitleStack = UIStackView(arrangedSubviews: [connectionIndicatorDot, statusTitleLabel])
-        connectionTitleStack.axis = .horizontal
-        connectionTitleStack.spacing = 8
-        connectionTitleStack.alignment = .center
-        connectionTitleStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let connectionStack = UIStackView(arrangedSubviews: [connectionTitleStack, statusDetailLabel])
-        connectionStack.axis = .vertical
-        connectionStack.spacing = 4
-        connectionStack.translatesAutoresizingMaskIntoConstraints = false
-
-        // 分隔线
-        statusCardDivider.backgroundColor = .separator
-        statusCardDivider.translatesAutoresizingMaskIntoConstraints = false
-
-        // 电量行
-        batteryIconImageView.image = UIImage(systemName: "battery.75")
-        batteryIconImageView.tintColor = .systemGreen
+        batteryIconImageView.image = UIImage(systemName: "questionmark.circle")
+        batteryIconImageView.tintColor = Self.textMuted
         batteryIconImageView.contentMode = .scaleAspectFit
         batteryIconImageView.translatesAutoresizingMaskIntoConstraints = false
 
-        batteryTitleLabel.font = .preferredFont(forTextStyle: .headline)
-        batteryTitleLabel.adjustsFontForContentSizeCategory = true
-        batteryTitleLabel.textColor = .label
-        batteryTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        batteryLevelLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        batteryLevelLabel.adjustsFontForContentSizeCategory = true
+        batteryLevelLabel.textColor = .white
+        batteryLevelLabel.text = "电量未知"
+        batteryLevelLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        batteryBadgeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        batteryBadgeLabel.layer.cornerRadius = 6
-        batteryBadgeLabel.clipsToBounds = true
-        batteryBadgeLabel.textAlignment = .center
+        batteryBadgePill.layer.cornerRadius = 6
+        batteryBadgePill.clipsToBounds = true
+        batteryBadgePill.isHidden = true
+        batteryBadgePill.translatesAutoresizingMaskIntoConstraints = false
+
+        batteryBadgeLabel.font = .systemFont(ofSize: 10, weight: .bold)
         batteryBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let batteryHeaderStack = UIStackView(arrangedSubviews: [batteryIconImageView, batteryTitleLabel, batteryBadgeLabel])
-        batteryHeaderStack.axis = .horizontal
-        batteryHeaderStack.spacing = 8
-        batteryHeaderStack.alignment = .center
-        batteryHeaderStack.translatesAutoresizingMaskIntoConstraints = false
+        batteryBadgePill.addSubview(batteryBadgeLabel)
 
-        batteryDetailLabel.font = .preferredFont(forTextStyle: .subheadline)
+        batteryDetailLabel.font = .preferredFont(forTextStyle: .caption2)
         batteryDetailLabel.adjustsFontForContentSizeCategory = true
-        batteryDetailLabel.textColor = .secondaryLabel
-        batteryDetailLabel.numberOfLines = 0
+        batteryDetailLabel.textColor = Self.textMuted
+        batteryDetailLabel.numberOfLines = 1
+        batteryDetailLabel.isHidden = true
         batteryDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let batteryStack = UIStackView(arrangedSubviews: [batteryHeaderStack, batteryDetailLabel])
-        batteryStack.axis = .vertical
-        batteryStack.spacing = 4
-        batteryStack.translatesAutoresizingMaskIntoConstraints = false
+        let badgeStack = UIStackView(arrangedSubviews: [batteryIconImageView, batteryLevelLabel, batteryBadgePill])
+        badgeStack.axis = .horizontal
+        badgeStack.spacing = 8
+        badgeStack.alignment = .center
+        badgeStack.translatesAutoresizingMaskIntoConstraints = false
 
-        statusCard.addSubview(connectionStack)
-        statusCard.addSubview(statusCardDivider)
-        statusCard.addSubview(batteryStack)
+        let batteryInfoStack = UIStackView(arrangedSubviews: [badgeStack, batteryDetailLabel])
+        batteryInfoStack.axis = .vertical
+        batteryInfoStack.spacing = 2
+        batteryInfoStack.alignment = .leading
+        batteryInfoStack.translatesAutoresizingMaskIntoConstraints = false
+
+        // 刷新按钮：无文字，仅清晰图标
+        let refreshConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        refreshBatteryButton.setImage(UIImage(systemName: "arrow.clockwise", withConfiguration: refreshConfig), for: .normal)
+        refreshBatteryButton.tintColor = Self.textMuted
+        refreshBatteryButton.translatesAutoresizingMaskIntoConstraints = false
+
+        batteryCard.addSubview(batteryInfoStack)
+        batteryCard.addSubview(refreshBatteryButton)
 
         NSLayoutConstraint.activate([
-            connectionIndicatorDot.widthAnchor.constraint(equalToConstant: 10),
-            connectionIndicatorDot.heightAnchor.constraint(equalToConstant: 10),
+            batteryBadgeLabel.topAnchor.constraint(equalTo: batteryBadgePill.topAnchor, constant: 2),
+            batteryBadgeLabel.bottomAnchor.constraint(equalTo: batteryBadgePill.bottomAnchor, constant: -2),
+            batteryBadgeLabel.leadingAnchor.constraint(equalTo: batteryBadgePill.leadingAnchor, constant: 6),
+            batteryBadgeLabel.trailingAnchor.constraint(equalTo: batteryBadgePill.trailingAnchor, constant: -6),
 
-            connectionStack.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 14),
-            connectionStack.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
-            connectionStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-
-            statusCardDivider.topAnchor.constraint(equalTo: connectionStack.bottomAnchor, constant: 12),
-            statusCardDivider.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
-            statusCardDivider.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-            statusCardDivider.heightAnchor.constraint(equalToConstant: 0.5),
-
-            batteryIconImageView.widthAnchor.constraint(equalToConstant: 24),
+            batteryIconImageView.widthAnchor.constraint(equalToConstant: 22),
             batteryIconImageView.heightAnchor.constraint(equalToConstant: 16),
 
-            batteryBadgeLabel.heightAnchor.constraint(equalToConstant: 18),
-            batteryBadgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            batteryInfoStack.leadingAnchor.constraint(equalTo: batteryCard.leadingAnchor, constant: 14),
+            batteryInfoStack.centerYAnchor.constraint(equalTo: batteryCard.centerYAnchor),
+            batteryInfoStack.trailingAnchor.constraint(lessThanOrEqualTo: refreshBatteryButton.leadingAnchor, constant: -8),
+            batteryInfoStack.topAnchor.constraint(greaterThanOrEqualTo: batteryCard.topAnchor, constant: 10),
+            batteryInfoStack.bottomAnchor.constraint(lessThanOrEqualTo: batteryCard.bottomAnchor, constant: -10),
 
-            batteryStack.topAnchor.constraint(equalTo: statusCardDivider.bottomAnchor, constant: 12),
-            batteryStack.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
-            batteryStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-            batteryStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -14)
+            refreshBatteryButton.trailingAnchor.constraint(equalTo: batteryCard.trailingAnchor, constant: -10),
+            refreshBatteryButton.centerYAnchor.constraint(equalTo: batteryCard.centerYAnchor),
+            refreshBatteryButton.widthAnchor.constraint(equalToConstant: 36),
+            refreshBatteryButton.heightAnchor.constraint(equalToConstant: 36),
+
+            batteryCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 52)
         ])
     }
 
     private func buildRecordingCard() {
-        styleCard(recordingCard)
+        stylePanel(recordingCard)
 
-        // 录音状态胶囊指示牌
-        recordingPillBadge.layer.cornerRadius = 11
-        recordingPillBadge.clipsToBounds = true
-        recordingPillBadge.backgroundColor = UIColor.secondarySystemFill
-        recordingPillBadge.translatesAutoresizingMaskIntoConstraints = false
+        // 状态指示小胶囊
+        recordingStatusPill.layer.cornerRadius = 10
+        recordingStatusPill.clipsToBounds = true
+        recordingStatusPill.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        recordingStatusPill.translatesAutoresizingMaskIntoConstraints = false
 
-        recordingPillDot.layer.cornerRadius = 4
-        recordingPillDot.clipsToBounds = true
-        recordingPillDot.backgroundColor = .systemGray
-        recordingPillDot.translatesAutoresizingMaskIntoConstraints = false
+        recordingStatusDot.layer.cornerRadius = 3.5
+        recordingStatusDot.clipsToBounds = true
+        recordingStatusDot.backgroundColor = Self.textTertiary
+        recordingStatusDot.translatesAutoresizingMaskIntoConstraints = false
 
-        recordingPillLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        recordingPillLabel.text = "空闲待命"
-        recordingPillLabel.textColor = .secondaryLabel
-        recordingPillLabel.translatesAutoresizingMaskIntoConstraints = false
+        recordingStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        recordingStatusLabel.adjustsFontForContentSizeCategory = true
+        recordingStatusLabel.textColor = Self.textMuted
+        recordingStatusLabel.text = "空闲待命"
+        recordingStatusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let pillContentStack = UIStackView(arrangedSubviews: [recordingPillDot, recordingPillLabel])
-        pillContentStack.axis = .horizontal
-        pillContentStack.spacing = 6
-        pillContentStack.alignment = .center
-        pillContentStack.translatesAutoresizingMaskIntoConstraints = false
+        let pillStack = UIStackView(arrangedSubviews: [recordingStatusDot, recordingStatusLabel])
+        pillStack.axis = .horizontal
+        pillStack.spacing = 6
+        pillStack.alignment = .center
+        pillStack.translatesAutoresizingMaskIntoConstraints = false
 
-        recordingPillBadge.addSubview(pillContentStack)
+        recordingStatusPill.addSubview(pillStack)
 
-        // 录音时长等宽大字号展示
-        recordingTimeLabel.font = .monospacedDigitSystemFont(ofSize: 38, weight: .bold)
+        // 时长展示（等宽大字号，居中突出）
+        recordingTimeLabel.font = .monospacedDigitSystemFont(ofSize: 42, weight: .bold)
         recordingTimeLabel.adjustsFontForContentSizeCategory = true
-        recordingTimeLabel.textColor = .secondaryLabel
-        recordingTimeLabel.text = "00:00"
+        recordingTimeLabel.textColor = Self.textTertiary
+        recordingTimeLabel.text = "--:--"
+        recordingTimeLabel.textAlignment = .center
         recordingTimeLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // 声波模拟指示器 (静态结构，动态伸缩高度)
-        waveformContainer.axis = .horizontal
-        waveformContainer.spacing = 4
-        waveformContainer.alignment = .center
-        waveformContainer.distribution = .fillEqually
-        waveformContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        waveformBars.removeAll()
-        for _ in 0..<5 {
-            let bar = UIView()
-            bar.layer.cornerRadius = 2
-            bar.clipsToBounds = true
-            bar.backgroundColor = .tertiaryLabel
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
-            bar.widthAnchor.constraint(equalToConstant: 4).isActive = true
-            waveformContainer.addArrangedSubview(bar)
-            waveformBars.append(bar)
-        }
-
-        let timerAndWaveformStack = UIStackView(arrangedSubviews: [recordingTimeLabel, waveformContainer])
-        timerAndWaveformStack.axis = .horizontal
-        timerAndWaveformStack.spacing = 16
-        timerAndWaveformStack.alignment = .center
-        timerAndWaveformStack.translatesAutoresizingMaskIntoConstraints = false
-
-        // 录音详细信息文案
-        recordingDetailLabel.font = .preferredFont(forTextStyle: .subheadline)
+        // 真实错误提示 (无错误时自动隐藏)
+        recordingDetailLabel.font = .preferredFont(forTextStyle: .caption1)
         recordingDetailLabel.adjustsFontForContentSizeCategory = true
-        recordingDetailLabel.textColor = .secondaryLabel
+        recordingDetailLabel.textColor = .systemRed
+        recordingDetailLabel.textAlignment = .center
         recordingDetailLabel.numberOfLines = 0
+        recordingDetailLabel.isHidden = true
         recordingDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        recordingCard.addSubview(recordingPillBadge)
-        recordingCard.addSubview(timerAndWaveformStack)
-        recordingCard.addSubview(recordingDetailLabel)
-
-        NSLayoutConstraint.activate([
-            pillContentStack.topAnchor.constraint(equalTo: recordingPillBadge.topAnchor, constant: 3),
-            pillContentStack.bottomAnchor.constraint(equalTo: recordingPillBadge.bottomAnchor, constant: -3),
-            pillContentStack.leadingAnchor.constraint(equalTo: recordingPillBadge.leadingAnchor, constant: 8),
-            pillContentStack.trailingAnchor.constraint(equalTo: recordingPillBadge.trailingAnchor, constant: -8),
-            recordingPillDot.widthAnchor.constraint(equalToConstant: 8),
-            recordingPillDot.heightAnchor.constraint(equalToConstant: 8),
-
-            recordingPillBadge.topAnchor.constraint(equalTo: recordingCard.topAnchor, constant: 14),
-            recordingPillBadge.leadingAnchor.constraint(equalTo: recordingCard.leadingAnchor, constant: 16),
-
-            timerAndWaveformStack.topAnchor.constraint(equalTo: recordingPillBadge.bottomAnchor, constant: 8),
-            timerAndWaveformStack.leadingAnchor.constraint(equalTo: recordingCard.leadingAnchor, constant: 16),
-            timerAndWaveformStack.trailingAnchor.constraint(lessThanOrEqualTo: recordingCard.trailingAnchor, constant: -16),
-
-            recordingDetailLabel.topAnchor.constraint(equalTo: timerAndWaveformStack.bottomAnchor, constant: 6),
-            recordingDetailLabel.leadingAnchor.constraint(equalTo: recordingCard.leadingAnchor, constant: 16),
-            recordingDetailLabel.trailingAnchor.constraint(equalTo: recordingCard.trailingAnchor, constant: -16),
-            recordingDetailLabel.bottomAnchor.constraint(equalTo: recordingCard.bottomAnchor, constant: -14)
-        ])
-    }
-
-    private func buildOutboxCard() {
-        styleCard(outboxCard)
-
-        outboxIconImageView.image = UIImage(systemName: "tray.full.fill")
-        outboxIconImageView.tintColor = .systemBlue
-        outboxIconImageView.contentMode = .scaleAspectFit
-        outboxIconImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        outboxTitleLabel.font = .preferredFont(forTextStyle: .headline)
-        outboxTitleLabel.adjustsFontForContentSizeCategory = true
-        outboxTitleLabel.textColor = .label
-        outboxTitleLabel.numberOfLines = 1
-        outboxTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        outboxBadgeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        outboxBadgeLabel.layer.cornerRadius = 6
-        outboxBadgeLabel.clipsToBounds = true
-        outboxBadgeLabel.textAlignment = .center
-        outboxBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleBadgeStack = UIStackView(arrangedSubviews: [outboxTitleLabel, outboxBadgeLabel])
-        titleBadgeStack.axis = .horizontal
-        titleBadgeStack.spacing = 8
-        titleBadgeStack.alignment = .center
-        titleBadgeStack.translatesAutoresizingMaskIntoConstraints = false
-
-        outboxDetailLabel.font = .preferredFont(forTextStyle: .subheadline)
-        outboxDetailLabel.adjustsFontForContentSizeCategory = true
-        outboxDetailLabel.textColor = .secondaryLabel
-        outboxDetailLabel.numberOfLines = 0
-        outboxDetailLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let textStack = UIStackView(arrangedSubviews: [titleBadgeStack, outboxDetailLabel])
-        textStack.axis = .vertical
-        textStack.spacing = 2
-        textStack.translatesAutoresizingMaskIntoConstraints = false
-
-        outboxChevronImageView.image = UIImage(systemName: "chevron.right")
-        outboxChevronImageView.tintColor = .tertiaryLabel
-        outboxChevronImageView.contentMode = .scaleAspectFit
-        outboxChevronImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        outboxCard.addSubview(outboxIconImageView)
-        outboxCard.addSubview(textStack)
-        outboxCard.addSubview(outboxChevronImageView)
-
-        NSLayoutConstraint.activate([
-            outboxIconImageView.leadingAnchor.constraint(equalTo: outboxCard.leadingAnchor, constant: 16),
-            outboxIconImageView.centerYAnchor.constraint(equalTo: outboxCard.centerYAnchor),
-            outboxIconImageView.widthAnchor.constraint(equalToConstant: 24),
-            outboxIconImageView.heightAnchor.constraint(equalToConstant: 24),
-
-            textStack.leadingAnchor.constraint(equalTo: outboxIconImageView.trailingAnchor, constant: 12),
-            textStack.topAnchor.constraint(equalTo: outboxCard.topAnchor, constant: 12),
-            textStack.bottomAnchor.constraint(equalTo: outboxCard.bottomAnchor, constant: -12),
-            textStack.trailingAnchor.constraint(lessThanOrEqualTo: outboxChevronImageView.leadingAnchor, constant: -8),
-
-            outboxBadgeLabel.heightAnchor.constraint(equalToConstant: 18),
-            outboxBadgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 54),
-
-            outboxChevronImageView.trailingAnchor.constraint(equalTo: outboxCard.trailingAnchor, constant: -16),
-            outboxChevronImageView.centerYAnchor.constraint(equalTo: outboxCard.centerYAnchor),
-            outboxChevronImageView.widthAnchor.constraint(equalToConstant: 12),
-            outboxChevronImageView.heightAnchor.constraint(equalToConstant: 16)
-        ])
-    }
-
-    private func buildConversationControlsCard() {
-        styleCard(conversationControlsCard)
-
-        conversationSectionHeader.text = "对话控制"
-        conversationSectionHeader.font = .preferredFont(forTextStyle: .subheadline)
-        conversationSectionHeader.adjustsFontForContentSizeCategory = true
-        conversationSectionHeader.textColor = .secondaryLabel
-        conversationSectionHeader.translatesAutoresizingMaskIntoConstraints = false
-
-        // 主操作按钮（大按钮，全宽高度 52）
+        // 主按钮：开始录音 / 发送 (50pt 高度，圆角 14)
         primaryActionButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         primaryActionButton.titleLabel?.adjustsFontForContentSizeCategory = true
-        primaryActionButton.backgroundColor = .systemBlue
-        primaryActionButton.setTitleColor(.white, for: .normal)
-        primaryActionButton.layer.cornerRadius = 16
+        primaryActionButton.layer.cornerRadius = 14
         primaryActionButton.clipsToBounds = true
-        primaryActionButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -8, bottom: 0, right: 8)
         primaryActionButton.translatesAutoresizingMaskIntoConstraints = false
+        primaryActionButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -6, bottom: 0, right: 6)
 
-        // 次级操作区（横向并列两按钮：暂停/继续，结束对话）
-        secondaryActionsStack.axis = .vertical
+        // 次级按钮行：暂停/继续、结束对话 (横向并列，各自 44pt 高度)
+        secondaryActionsStack.axis = .horizontal
         secondaryActionsStack.spacing = 10
         secondaryActionsStack.distribution = .fillEqually
         secondaryActionsStack.translatesAutoresizingMaskIntoConstraints = false
 
         pauseResumeButton.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
         pauseResumeButton.titleLabel?.adjustsFontForContentSizeCategory = true
-        pauseResumeButton.backgroundColor = .secondarySystemFill
-        pauseResumeButton.setTitleColor(.label, for: .normal)
-        pauseResumeButton.layer.cornerRadius = 14
+        pauseResumeButton.backgroundColor = UIColor(red: 26/255, green: 28/255, blue: 34/255, alpha: 1.0)
+        pauseResumeButton.layer.borderColor = Self.cardBorder.cgColor
+        pauseResumeButton.layer.borderWidth = 0.5
+        pauseResumeButton.layer.cornerRadius = 12
         pauseResumeButton.clipsToBounds = true
-        pauseResumeButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
+        pauseResumeButton.setTitleColor(.white, for: .normal)
+        pauseResumeButton.tintColor = .white
         pauseResumeButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -6, bottom: 0, right: 6)
         pauseResumeButton.translatesAutoresizingMaskIntoConstraints = false
 
         endConversationButton.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
         endConversationButton.titleLabel?.adjustsFontForContentSizeCategory = true
         endConversationButton.backgroundColor = UIColor.systemRed.withAlphaComponent(0.12)
-        endConversationButton.setTitleColor(.systemRed, for: .normal)
-        endConversationButton.layer.cornerRadius = 14
+        endConversationButton.layer.borderColor = UIColor.systemRed.withAlphaComponent(0.24).cgColor
+        endConversationButton.layer.borderWidth = 0.5
+        endConversationButton.layer.cornerRadius = 12
         endConversationButton.clipsToBounds = true
-        endConversationButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        endConversationButton.setTitleColor(.systemRed, for: .normal)
         endConversationButton.tintColor = .systemRed
         endConversationButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -6, bottom: 0, right: 6)
+        endConversationButton.setImage(UIImage(systemName: "stop.fill"), for: .normal)
         endConversationButton.translatesAutoresizingMaskIntoConstraints = false
 
         secondaryActionsStack.addArrangedSubview(pauseResumeButton)
         secondaryActionsStack.addArrangedSubview(endConversationButton)
 
-        conversationHintLabel.text = "说明：『发送本条』保留上下文继续多轮对话；『结束当前对话』让下一条语音进入新对话。"
-        conversationHintLabel.font = .preferredFont(forTextStyle: .footnote)
-        conversationHintLabel.adjustsFontForContentSizeCategory = true
-        conversationHintLabel.textColor = .secondaryLabel
-        conversationHintLabel.textAlignment = .center
-        conversationHintLabel.numberOfLines = 0
-        conversationHintLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let controlsStack = UIStackView(arrangedSubviews: [
-            conversationSectionHeader,
+        let cardStack = UIStackView(arrangedSubviews: [
+            recordingStatusPill,
+            recordingTimeLabel,
+            recordingDetailLabel,
             primaryActionButton,
-            secondaryActionsStack,
-            conversationHintLabel
+            secondaryActionsStack
         ])
-        for button in [primaryActionButton, pauseResumeButton, endConversationButton] {
-            button.titleLabel?.numberOfLines = 0
-            button.titleLabel?.textAlignment = .center
-            button.contentEdgeInsets = UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        }
-        controlsStack.axis = .vertical
-        controlsStack.spacing = 12
-        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        cardStack.axis = .vertical
+        cardStack.spacing = 14
+        cardStack.alignment = .fill
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
 
-        conversationControlsCard.addSubview(controlsStack)
+        recordingCard.addSubview(cardStack)
 
         NSLayoutConstraint.activate([
-            primaryActionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 52),
+            pillStack.topAnchor.constraint(equalTo: recordingStatusPill.topAnchor, constant: 4),
+            pillStack.bottomAnchor.constraint(equalTo: recordingStatusPill.bottomAnchor, constant: -4),
+            pillStack.leadingAnchor.constraint(equalTo: recordingStatusPill.leadingAnchor, constant: 8),
+            pillStack.trailingAnchor.constraint(equalTo: recordingStatusPill.trailingAnchor, constant: -8),
+
+            recordingStatusDot.widthAnchor.constraint(equalToConstant: 7),
+            recordingStatusDot.heightAnchor.constraint(equalToConstant: 7),
+
+            recordingStatusPill.centerXAnchor.constraint(equalTo: recordingCard.centerXAnchor),
+
+            primaryActionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 50),
             pauseResumeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             endConversationButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
-            controlsStack.topAnchor.constraint(equalTo: conversationControlsCard.topAnchor, constant: 14),
-            controlsStack.leadingAnchor.constraint(equalTo: conversationControlsCard.leadingAnchor, constant: 16),
-            controlsStack.trailingAnchor.constraint(equalTo: conversationControlsCard.trailingAnchor, constant: -16),
-            controlsStack.bottomAnchor.constraint(equalTo: conversationControlsCard.bottomAnchor, constant: -14)
+            cardStack.topAnchor.constraint(equalTo: recordingCard.topAnchor, constant: 16),
+            cardStack.bottomAnchor.constraint(equalTo: recordingCard.bottomAnchor, constant: -16),
+            cardStack.leadingAnchor.constraint(equalTo: recordingCard.leadingAnchor, constant: 16),
+            cardStack.trailingAnchor.constraint(equalTo: recordingCard.trailingAnchor, constant: -16)
         ])
     }
 
-    private func buildToolsCard() {
-        styleCard(toolsCard)
+    private func buildFooterRow() {
+        footerRow.axis = .horizontal
+        footerRow.spacing = 10
+        footerRow.distribution = .fillEqually
+        footerRow.translatesAutoresizingMaskIntoConstraints = false
 
-        toolsSectionHeader.text = "设备与诊断"
-        toolsSectionHeader.font = .preferredFont(forTextStyle: .subheadline)
-        toolsSectionHeader.adjustsFontForContentSizeCategory = true
-        toolsSectionHeader.textColor = .secondaryLabel
-        toolsSectionHeader.translatesAutoresizingMaskIntoConstraints = false
-
-        reconnectRowButton.configure(
-            icon: UIImage(systemName: "antenna.radiowaves.left.and.right"),
-            iconColor: .systemBlue,
-            title: "配对 / 重连设备",
-            subtitle: "搜索或切换已绑定的 ESP32 手表"
+        deviceEntryButton.configure(
+            icon: UIImage(systemName: "applewatch"),
+            title: "设备"
+        )
+        outboxEntryButton.configure(
+            icon: UIImage(systemName: "tray"),
+            title: "待发"
+        )
+        settingsEntryButton.configure(
+            icon: UIImage(systemName: "gearshape"),
+            title: "设置"
         )
 
-        outboxRowButton.configure(
-            icon: UIImage(systemName: "arrow.up.bin.fill"),
-            iconColor: .systemOrange,
-            title: "录音待发箱与恢复",
-            subtitle: "网络恢复后续传或导出已保存的录音文件"
-        )
-
-        diagnosticsRowButton.configure(
-            icon: UIImage(systemName: "wrench.and.screwdriver.fill"),
-            iconColor: .systemGray,
-            title: "穿戴设备高级诊断",
-            subtitle: "打开原始诊断日志与底层蓝牙测试页"
-        )
-
-        let divider1 = UIView()
-        divider1.backgroundColor = .separator
-        divider1.translatesAutoresizingMaskIntoConstraints = false
-        divider1.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-
-        let divider2 = UIView()
-        divider2.backgroundColor = .separator
-        divider2.translatesAutoresizingMaskIntoConstraints = false
-        divider2.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-
-        let rowsStack = UIStackView(arrangedSubviews: [
-            toolsSectionHeader,
-            reconnectRowButton,
-            divider1,
-            outboxRowButton,
-            divider2,
-            diagnosticsRowButton
-        ])
-        rowsStack.axis = .vertical
-        rowsStack.spacing = 10
-        rowsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        toolsCard.addSubview(rowsStack)
+        footerRow.addArrangedSubview(deviceEntryButton)
+        footerRow.addArrangedSubview(outboxEntryButton)
+        footerRow.addArrangedSubview(settingsEntryButton)
 
         NSLayoutConstraint.activate([
-            rowsStack.topAnchor.constraint(equalTo: toolsCard.topAnchor, constant: 14),
-            rowsStack.leadingAnchor.constraint(equalTo: toolsCard.leadingAnchor, constant: 16),
-            rowsStack.trailingAnchor.constraint(equalTo: toolsCard.trailingAnchor, constant: -16),
-            rowsStack.bottomAnchor.constraint(equalTo: toolsCard.bottomAnchor, constant: -14)
+            deviceEntryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
+            outboxEntryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
+            settingsEntryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 46)
         ])
     }
 
-    private func buildTipsCard() {
-        tipsCard.backgroundColor = .secondarySystemGroupedBackground
-        tipsCard.layer.cornerRadius = 14
-        tipsCard.clipsToBounds = true
-        tipsCard.translatesAutoresizingMaskIntoConstraints = false
-
-        tipsIconImageView.image = UIImage(systemName: "hand.tap.fill")
-        tipsIconImageView.tintColor = .systemBlue
-        tipsIconImageView.contentMode = .scaleAspectFit
-        tipsIconImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        tipsTitleLabel.text = "手表按键捷径"
-        tipsTitleLabel.font = .preferredFont(forTextStyle: .subheadline)
-        tipsTitleLabel.adjustsFontForContentSizeCategory = true
-        tipsTitleLabel.textColor = .label
-        tipsTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerStack = UIStackView(arrangedSubviews: [tipsIconImageView, tipsTitleLabel])
-        headerStack.axis = .horizontal
-        headerStack.spacing = 6
-        headerStack.alignment = .center
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-
-        tipsContentLabel.font = .preferredFont(forTextStyle: .footnote)
-        tipsContentLabel.adjustsFontForContentSizeCategory = true
-        tipsContentLabel.textColor = .secondaryLabel
-        tipsContentLabel.numberOfLines = 0
-        tipsContentLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let cardStack = UIStackView(arrangedSubviews: [headerStack, tipsContentLabel])
-        cardStack.axis = .vertical
-        cardStack.spacing = 6
-        cardStack.translatesAutoresizingMaskIntoConstraints = false
-
-        tipsCard.addSubview(cardStack)
-
-        NSLayoutConstraint.activate([
-            tipsIconImageView.widthAnchor.constraint(equalToConstant: 16),
-            tipsIconImageView.heightAnchor.constraint(equalToConstant: 16),
-
-            cardStack.topAnchor.constraint(equalTo: tipsCard.topAnchor, constant: 12),
-            cardStack.leadingAnchor.constraint(equalTo: tipsCard.leadingAnchor, constant: 14),
-            cardStack.trailingAnchor.constraint(equalTo: tipsCard.trailingAnchor, constant: -14),
-            cardStack.bottomAnchor.constraint(equalTo: tipsCard.bottomAnchor, constant: -12)
-        ])
-    }
-
-    private func styleCard(_ card: UIView) {
-        card.backgroundColor = .secondarySystemGroupedBackground
-        card.layer.cornerRadius = 18
-        card.layer.cornerCurve = .continuous
-        card.clipsToBounds = true
-        card.translatesAutoresizingMaskIntoConstraints = false
+    private func stylePanel(_ panel: UIView) {
+        panel.backgroundColor = Self.surfaceBg
+        panel.layer.borderColor = Self.cardBorder.cgColor
+        panel.layer.borderWidth = 0.5
+        panel.layer.cornerRadius = 14
+        panel.layer.cornerCurve = .continuous
+        panel.clipsToBounds = true
+        panel.translatesAutoresizingMaskIntoConstraints = false
     }
 
     private func setupConstraints() {
@@ -1149,69 +982,63 @@ public final class WatchDashboardView: UIView {
             contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             contentView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
 
-            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
             contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24)
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
         ])
     }
 
-    // MARK: - 事件绑定 (调用闭包，绝不实现业务逻辑)
+    // MARK: - 事件绑定 (仅通过 onAction 外发，绝不触发重复闭包)
 
     private func setupActions() {
-        quickReconnectButton.addTarget(self, action: #selector(handleReconnectTapped), for: .touchUpInside)
-        reconnectRowButton.addTarget(self, action: #selector(handleReconnectTapped), for: .touchUpInside)
+        refreshBatteryButton.addTarget(self, action: #selector(handleRefreshBatteryTapped), for: .touchUpInside)
         primaryActionButton.addTarget(self, action: #selector(handlePrimaryActionTapped), for: .touchUpInside)
         pauseResumeButton.addTarget(self, action: #selector(handlePauseResumeTapped), for: .touchUpInside)
         endConversationButton.addTarget(self, action: #selector(handleEndConversationTapped), for: .touchUpInside)
-        outboxRowButton.addTarget(self, action: #selector(handleOutboxTapped), for: .touchUpInside)
-        diagnosticsRowButton.addTarget(self, action: #selector(handleDiagnosticsTapped), for: .touchUpInside)
-
-        let outboxTapGesture = UITapGestureRecognizer(target: self, action: #selector(handleOutboxTapped))
-        outboxCard.addGestureRecognizer(outboxTapGesture)
+        deviceEntryButton.addTarget(self, action: #selector(handleReconnectTapped), for: .touchUpInside)
+        outboxEntryButton.addTarget(self, action: #selector(handleOutboxTapped), for: .touchUpInside)
+        settingsEntryButton.addTarget(self, action: #selector(handleDiagnosticsTapped), for: .touchUpInside)
     }
 
-    @objc private func handleReconnectTapped() {
-        onAction?(.reconnectOrAddDevice)
-        onReconnectOrAddDevice?()
+    @objc private func handleRefreshBatteryTapped() {
+        onAction?(.refreshBattery)
     }
 
     @objc private func handlePrimaryActionTapped() {
         onAction?(.primaryAction)
-        onPrimaryAction?()
     }
 
     @objc private func handlePauseResumeTapped() {
         onAction?(.pauseResumeRecording)
-        onPauseResumeRecording?()
     }
 
     @objc private func handleEndConversationTapped() {
         onAction?(.endConversation)
-        onEndConversation?()
+    }
+
+    @objc private func handleReconnectTapped() {
+        onAction?(.reconnectOrAddDevice)
     }
 
     @objc private func handleOutboxTapped() {
         onAction?(.openOutbox)
-        onOpenOutbox?()
     }
 
     @objc private func handleDiagnosticsTapped() {
         onAction?(.openDiagnostics)
-        onOpenDiagnostics?()
     }
 }
 
-// MARK: - 辅助子视图：次区域行式按钮 (ActionRowButton)
+// MARK: - 辅助子视图：紧凑入口按钮 (CompactEntryButton)
 
-/// 具有原生 iOS 设置风格的行式操作入口
-private final class ActionRowButton: UIControl {
+/// 紧凑扁平入口按钮，支持徽标展示、高亮按压与禁用状态
+private final class CompactEntryButton: UIControl {
 
-    let iconImageView = UIImageView()
-    let titleLabel = UILabel()
-    let subtitleLabel = UILabel()
-    let badgeLabel = UILabel()
-    let chevronImageView = UIImageView()
+    private let iconImageView = UIImageView()
+    private let titleLabel = UILabel()
+    private let badgeView = UIView()
+    private let badgeLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1223,88 +1050,92 @@ private final class ActionRowButton: UIControl {
         setupViews()
     }
 
-    func configure(icon: UIImage?, iconColor: UIColor, title: String, subtitle: String) {
+    func configure(icon: UIImage?, title: String) {
         iconImageView.image = icon
-        iconImageView.tintColor = iconColor
         titleLabel.text = title
-        subtitleLabel.text = subtitle
+    }
+
+    func setBadge(_ text: String?) {
+        if let badgeText = text, !badgeText.isEmpty {
+            badgeLabel.text = badgeText
+            badgeView.isHidden = false
+        } else {
+            badgeView.isHidden = true
+        }
     }
 
     override var isHighlighted: Bool {
         didSet {
-            alpha = isHighlighted ? 0.6 : 1.0
+            alpha = isHighlighted ? 0.6 : (isEnabled ? 1.0 : 0.4)
+        }
+    }
+
+    override var isEnabled: Bool {
+        didSet {
+            alpha = isEnabled ? 1.0 : 0.4
         }
     }
 
     private func setupViews() {
+        backgroundColor = UIColor(red: 18/255, green: 20/255, blue: 24/255, alpha: 1.0)
+        layer.borderColor = UIColor(red: 32/255, green: 36/255, blue: 44/255, alpha: 1.0).cgColor
+        layer.borderWidth = 0.5
+        layer.cornerRadius = 12
+        clipsToBounds = true
         translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
 
         iconImageView.contentMode = .scaleAspectFit
+        iconImageView.tintColor = UIColor(red: 138/255, green: 145/255, blue: 158/255, alpha: 1.0)
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
 
-        titleLabel.font = .preferredFont(forTextStyle: .body)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         titleLabel.adjustsFontForContentSizeCategory = true
-        titleLabel.textColor = .label
+        titleLabel.textColor = .white
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        subtitleLabel.font = .preferredFont(forTextStyle: .footnote)
-        subtitleLabel.adjustsFontForContentSizeCategory = true
-        subtitleLabel.textColor = .secondaryLabel
-        subtitleLabel.numberOfLines = 0
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.backgroundColor = .systemOrange
+        badgeView.layer.cornerRadius = 8
+        badgeView.clipsToBounds = true
+        badgeView.isHidden = true
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
 
-        badgeLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        badgeLabel.font = .systemFont(ofSize: 10, weight: .bold)
         badgeLabel.textColor = .white
-        badgeLabel.backgroundColor = .systemOrange
-        badgeLabel.layer.cornerRadius = 9
-        badgeLabel.clipsToBounds = true
         badgeLabel.textAlignment = .center
-        badgeLabel.isHidden = true
         badgeLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        chevronImageView.image = UIImage(systemName: "chevron.right")
-        chevronImageView.tintColor = .tertiaryLabel
-        chevronImageView.contentMode = .scaleAspectFit
-        chevronImageView.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.addSubview(badgeLabel)
 
-        let labelStack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
-        labelStack.axis = .vertical
-        labelStack.spacing = 2
-        labelStack.translatesAutoresizingMaskIntoConstraints = false
+        let stack = UIStackView(arrangedSubviews: [iconImageView, titleLabel, badgeView])
+        stack.axis = .horizontal
+        stack.spacing = 6
+        stack.alignment = .center
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(iconImageView)
-        addSubview(labelStack)
-        addSubview(badgeLabel)
-        addSubview(chevronImageView)
+        addSubview(stack)
 
         NSLayoutConstraint.activate([
-            iconImageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 24),
-            iconImageView.heightAnchor.constraint(equalToConstant: 24),
+            iconImageView.widthAnchor.constraint(equalToConstant: 16),
+            iconImageView.heightAnchor.constraint(equalToConstant: 16),
 
-            labelStack.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 12),
-            labelStack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            labelStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            labelStack.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -8),
+            badgeLabel.topAnchor.constraint(equalTo: badgeView.topAnchor, constant: 1),
+            badgeLabel.bottomAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: -1),
+            badgeLabel.leadingAnchor.constraint(equalTo: badgeView.leadingAnchor, constant: 5),
+            badgeLabel.trailingAnchor.constraint(equalTo: badgeView.trailingAnchor, constant: -5),
+            badgeView.heightAnchor.constraint(equalToConstant: 16),
 
-            badgeLabel.trailingAnchor.constraint(equalTo: chevronImageView.leadingAnchor, constant: -6),
-            badgeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badgeLabel.heightAnchor.constraint(equalToConstant: 18),
-            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 24),
-
-            chevronImageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            chevronImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chevronImageView.widthAnchor.constraint(equalToConstant: 12),
-            chevronImageView.heightAnchor.constraint(equalToConstant: 16)
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4)
         ])
     }
 }
 
 // MARK: - 便捷宿主控制器 (WatchDashboardViewController)
 
-/// 供 Codex 方便 present / push 的开箱即用宿主控制器
+/// 供模态弹出与嵌入的轻量宿主控制器
 public final class WatchDashboardViewController: UIViewController {
 
     public let dashboardView = WatchDashboardView()
@@ -1315,10 +1146,10 @@ public final class WatchDashboardViewController: UIViewController {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-        title = "语音设备"
+        title = "relay watch"
+        overrideUserInterfaceStyle = .dark
         navigationItem.largeTitleDisplayMode = .never
 
-        // 默认提供关闭按钮（若处于模态弹出中）
         if presentingViewController != nil {
             navigationItem.rightBarButtonItem = UIBarButtonItem(
                 barButtonSystemItem: .done,

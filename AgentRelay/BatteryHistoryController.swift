@@ -31,9 +31,9 @@ final class BatteryHistoryController: UIViewController {
         range.addTarget(self, action: #selector(render), for: .valueChanged)
         summary.text = "正在读取记录…"
         let legend = UILabel()
-        legend.text = "蓝色：电池供电　绿色：USB / 充电\n点击曲线查看读数；空白表示没有记录。"
+        legend.text = "蓝色 · 电池供电　绿色 · USB / 充电"
         let note = UILabel()
-        note.text = "百分比来自手表芯片估算。仅展示实际收到的数据；充电期间的曲线不能用于推算续航。后台暂停、断连或 App 关闭可能造成记录缺口。"
+        note.isHidden = true
         for label in [summary, selection, legend, note] {
             label.numberOfLines = 0
             label.font = .preferredFont(forTextStyle: .subheadline)
@@ -85,7 +85,7 @@ final class BatteryHistoryController: UIViewController {
                             charging: object["charging"] as? Bool ?? false, usb: object["usb"] as? Bool ?? false, device: device))
                     }
                 }
-            } catch { failure = "暂时无法读取电量记录，请稍后刷新。" }
+            } catch { failure = "读取失败" }
             let result = loaded.sorted { $0.date < $1.date }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, generation == self.loadGeneration else { return }
@@ -105,10 +105,12 @@ final class BatteryHistoryController: UIViewController {
         // readings do not collapse into a single pixel on a 24-hour axis.
         let plotStart = visible.first.map { max(start, $0.date.addingTimeInterval(-60)) } ?? start
         chart.update(visible, start: plotStart, end: end)
-        selection.text = visible.isEmpty ? "连接 relay watch 后会自动积累电量记录。" : "轻点一个数据点，查看时间和电量。"
-        if let first = visible.first, let last = visible.last {
-            summary.text = "\(first.percent)% → \(last.percent)%　·　\(visible.count) 条有效记录"
-        } else { summary.text = "这个时间范围内暂无有效记录" }
+        selection.text = nil
+        if let last = visible.last {
+            summary.text = "\(visible.count) 条记录"
+            let format = DateFormatter(); format.dateFormat = "MM-dd HH:mm"
+            selection.text = "\(format.string(from: last.date)) · \(last.percent)% · \(last.charging ? "充电中" : last.usb ? "USB 已连接" : "电池供电")"
+        } else { summary.text = nil }
     }
     @objc private func export() {
         guard let url = WatchBatteryStore.shared.historyURL, FileManager.default.fileExists(atPath: url.path) else { return }
