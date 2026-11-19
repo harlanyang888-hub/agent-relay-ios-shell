@@ -66,7 +66,7 @@
 ### 3.1 顶部设备卡片 (Header)
 - **设备图标**：Apple Watch / 穿戴设备原生矢量符号。
 - **设备友好名称 (`deviceName`)**：例如 `"Relay 语音手表"`。
-- **链路副标题 (`deviceSubtitle`)**：例如 `"ESP32-S3 BLE · 原生音频链路"`。
+- **链路副标题 (`deviceSubtitle`)**：例如 `"按键控制 · 手机录音"`。
 - **快捷重连按钮**：轻量级 `"重连设备"` 入口。
 
 ### 3.2 主区域 1：连接与电量状态卡片 (Status Card)
@@ -229,7 +229,7 @@ final class RelayWatchContainerViewController: UIViewController {
         
         let state = WatchDashboardViewState(
             deviceName: BLEProbe.shared.currentDeviceName ?? "Relay 语音手表",
-            deviceSubtitle: "ESP32-S3 BLE · 原生音频链路",
+            deviceSubtitle: "按键控制 · 手机录音",
             statusTitle: isConnected ? "已连接" : "未连接",
             statusDetail: isConnected ? "蓝牙低功耗链路正常" : "未发现已绑定的手表设备",
             connectionState: isConnected ? .connected : .disconnected,

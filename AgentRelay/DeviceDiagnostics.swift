@@ -462,6 +462,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state != .poweredOn, let id = selected?.identifier { WatchBatteryStore.shared.disconnected(id) }
         DeviceDiagnostics.shared.log("BLE state=\(central.state.rawValue)")
         if central.state == .poweredOn { restoreSavedButton() }
         if central.state == .poweredOn, scanningRequested { scan() }

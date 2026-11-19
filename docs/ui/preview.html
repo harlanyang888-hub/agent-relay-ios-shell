@@ -594,8 +594,9 @@
       backdrop-filter: blur(10px);
     }
   </style>
-</head>
+<style>@media(max-width:500px){body{padding:12px!important;align-items:stretch!important}.iphone{max-width:100%;box-sizing:border-box}h1{font-size:20px} .controls{flex-wrap:wrap}}</style></head>
 <body>
+<p style="text-align:center;color:#999;padding:8px">静态设计预览 · 数字为示例，非设备实测</p>
 
   <header>
     <h1>Agent Relay · 语音手表控制页面</h1>
@@ -645,7 +646,7 @@
             </div>
             <div>
               <div class="device-name text-primary" id="deviceName">Relay 语音手表</div>
-              <div class="device-sub text-secondary" id="deviceSubtitle">ESP32-S3 BLE · 原生音频链路</div>
+              <div class="device-sub text-secondary" id="deviceSubtitle">按键控制 · 手机录音</div>
             </div>
           </div>
           <button class="btn-pill" id="quickReconnectBtn" onclick="toastAction('.reconnectOrAddDevice: 快捷重连')">重连设备</button>
@@ -659,7 +660,7 @@
               <div class="dot dot-green" id="connDot"></div>
               <span class="status-title text-primary" id="connTitle">已连接</span>
             </div>
-            <div class="status-desc text-secondary" id="connDetail">蓝牙低功耗链路正常 · 延迟 16ms</div>
+            <div class="status-desc text-secondary" id="connDetail">设备已连接，可以使用手表按键</div>
           </div>
 
           <div class="divider"></div>
@@ -677,7 +678,7 @@
               </div>
               <span class="badge badge-green" id="batteryBadge">正常</span>
             </div>
-            <div class="status-desc text-secondary" id="batteryDetail">电量正常 · 预计可用约 6 小时</div>
+            <div class="status-desc text-secondary" id="batteryDetail">电量示例 · 实际续航待测</div>
           </div>
         </div>
 
@@ -823,9 +824,9 @@
       idle: {
         connState: 'connected',
         connTitle: '已连接',
-        connDetail: '蓝牙低功耗链路正常 · 延迟 16ms',
+        connDetail: '设备已连接，可以使用手表按键',
         batteryText: '85%',
-        batteryDetail: '电量正常 · 预计可用约 6 小时',
+        batteryDetail: '电量示例 · 实际续航待测',
         batteryBadge: '正常',
         batteryBadgeClass: 'badge-green',
         batteryColor: 'var(--system-green)',
@@ -862,7 +863,7 @@
         recordingPillBg: 'rgba(255, 59, 48, 0.18)',
         recordingPillColor: 'var(--system-red)',
         recordingTime: '00:24',
-        recordingDetail: '麦克风：ESP32 硬件采音中 · 点击“发送本条”保留多轮会话',
+        recordingDetail: '麦克风：手机端采音中 · 点击“发送本条”保留多轮会话',
         waveformActive: true,
         pendingText: '待发箱已清空',
         pendingDetail: '上条消息已交付服务端',
