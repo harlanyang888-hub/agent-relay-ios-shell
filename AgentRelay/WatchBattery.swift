@@ -29,20 +29,55 @@ final class WatchBatteryStore {
     private(set) var connected = false
     private(set) var deviceID: UUID?
     private(set) var available = false
+    private(set) var pendingRefreshToken: UInt16?
+    private(set) var refreshError: String?
+    private var refreshTimeout: DispatchWorkItem?
+    private var refreshSequence = UInt16.random(in: 1...UInt16.max)
+    private var lastReplyToken: UInt16 = 0
+    var isRefreshing: Bool { pendingRefreshToken != nil }
+
+    func beginRefresh(_ id: UUID) -> UInt16? {
+        guard connected, deviceID == id, pendingRefreshToken == nil else { return nil }
+        repeat { refreshSequence &+= 1 } while refreshSequence == 0 || refreshSequence == lastReplyToken
+        let token = refreshSequence
+        pendingRefreshToken = token; refreshError = nil
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self = self, self.deviceID == id, self.pendingRefreshToken == token else { return }
+            self.failRefresh("刷新超时")
+        }
+        refreshTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
+        notify(); return token
+    }
+    func failRefresh(_ message: String) {
+        refreshTimeout?.cancel(); refreshTimeout = nil; pendingRefreshToken = nil
+        refreshError = message; notify()
+    }
 
     func attach(_ id: UUID) {
+        refreshTimeout?.cancel(); refreshTimeout = nil; pendingRefreshToken = nil; refreshError = nil
         if deviceID != id { sample = nil }
         deviceID = id; connected = true; available = false
         notify()
     }
     func disconnected(_ id: UUID) {
         guard deviceID == id else { return }
+        refreshTimeout?.cancel(); refreshTimeout = nil; pendingRefreshToken = nil
         connected = false; notify()
     }
     func receive(_ data: Data?, from id: UUID, error: Error?) {
         guard deviceID == id, connected else { return }
         available = true
         sample = error == nil ? data.flatMap { WatchBatterySample(packet: $0) } : nil
+        if error == nil, let data = data, data.count == 12, data.first == 1 {
+            let bytes = Array(data)
+            let token = UInt16(bytes[10]) | UInt16(bytes[11]) << 8
+            lastReplyToken = token
+            if let pending = pendingRefreshToken, token == pending {
+                refreshTimeout?.cancel(); refreshTimeout = nil; pendingRefreshToken = nil
+                refreshError = sample == nil ? "暂时无法读取电量" : nil
+            } else if pendingRefreshToken == nil, sample != nil { refreshError = nil }
+        }
         recordSample()
         notify()
     }
@@ -82,12 +117,14 @@ final class WatchBatteryStore {
         return "\(percent)%"
     }
     var detail: String {
+        if isRefreshing { return "刷新中" }
+        if let error = refreshError { return error }
         guard let sample = sample else { return available ? "暂时无法读取电池数据" : "等待手表电量数据" }
         let age = max(0, Int(Date().timeIntervalSince(sample.receivedAt)))
-        let freshness = !connected ? "已断开 · 上次读数" : age > 180 ? "读数已过期" : "刚刚更新"
+        let freshness = !connected ? "已断开" : age > 180 ? "读数已过期" : age < 60 ? "刚刚更新" : "\(age / 60)分钟前"
         let power = sample.charging ? "充电中" : sample.usb ? "USB 已连接" : "电池供电"
         let voltage = sample.millivolts.map { " · \(String(format: "%.2f", Double($0) / 1000))V" } ?? ""
-        return "\(power)\(voltage) · \(freshness) · \(age / 60)分钟前"
+        return "\(power)\(voltage) · \(freshness)"
     }
     private func notify() { NotificationCenter.default.post(name: Self.changed, object: self) }
 }
