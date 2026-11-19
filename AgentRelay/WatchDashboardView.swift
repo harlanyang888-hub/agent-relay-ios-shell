@@ -2,7 +2,7 @@
 //  WatchDashboardView.swift
 //  AgentRelay
 //
-//  Created for Relay 语音手表控制页面 (Native iOS UI)
+//  Created for relay watch控制页面 (Native iOS UI)
 //  纯 UIKit 视图，无业务推导与副作用，通过 configure(state:) 单向渲染，动作通过闭包外发。
 //
 
@@ -14,7 +14,7 @@ import UIKit
 public struct WatchDashboardViewState: Equatable {
 
     // MARK: 1. 设备基本信息
-    /// 设备友好名称，例如 "Relay 语音手表"、"ESP32-S3 Watch"
+    /// 设备友好名称，例如 "relay watch"、"ESP32-S3 Watch"
     public var deviceName: String
     /// 硬件/链路副标题，例如 "ESP32-S3 BLE · 原生音频链路"
     public var deviceSubtitle: String?
@@ -137,7 +137,7 @@ public struct WatchDashboardViewState: Equatable {
 
     // MARK: - 全量初始化
     public init(
-        deviceName: String = "Relay 语音手表",
+        deviceName: String = "relay watch",
         deviceSubtitle: String? = "按键控制 · 手机录音",
         statusTitle: String = "未连接",
         statusDetail: String = "等待设备连接",

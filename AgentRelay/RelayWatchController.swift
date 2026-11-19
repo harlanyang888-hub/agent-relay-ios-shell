@@ -10,9 +10,11 @@ final class RelayWatchController: UIViewController {
     override func loadView() { view = dashboard }
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "语音手表"
+        title = "relay watch"
+        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = UIColor(red: 10/255, green: 11/255, blue: 13/255, alpha: 1)
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "电量记录", style: .plain, target: self, action: #selector(exportBattery))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "电量记录", style: .plain, target: self, action: #selector(openBatteryHistory))
         dashboard.onAction = { [weak self] action in self?.handle(action) }
         refresh()
     }
@@ -61,7 +63,7 @@ final class RelayWatchController: UIViewController {
         else if paused { detail = "草稿已保留。继续追加，或发送为一条语音。" }
         else { detail = watch.hasConversation ? "下一条语音继续当前对话" : "开始录音，发送后创建新对话" }
         dashboard.configure(state: WatchDashboardViewState(
-            deviceName: "Relay 语音手表", deviceSubtitle: "按键控制 · 手机录音",
+            deviceName: "relay watch", deviceSubtitle: "按键控制 · 手机录音",
             statusTitle: ready ? "设备已就绪" : "设备尚未就绪",
             statusDetail: ready ? "可通过手表按键控制手机录音" : "配对后靠近手机，等待设备就绪",
             connectionState: ready ? .connected : .disconnected,
@@ -109,19 +111,13 @@ final class RelayWatchController: UIViewController {
     private func openDiagnostics(outbox: Bool) {
         let detail = DeviceDiagnosticsViewController()
         let nav = UINavigationController(rootViewController: detail)
+        nav.overrideUserInterfaceStyle = .dark
         nav.modalPresentationStyle = .fullScreen
         present(nav, animated: true) { if outbox { detail.showVoiceRecovery() } }
     }
     @objc private func close() { dismiss(animated: true) }
-    @objc private func exportBattery() {
-        guard let url = WatchBatteryStore.shared.historyURL,
-              FileManager.default.fileExists(atPath: url.path) else {
-            let alert = UIAlertController(title: "还没有电量记录", message: "连接支持电量上报的手表后会自动记录。", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "知道了", style: .default)); present(alert, animated: true); return
-        }
-        let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        share.popoverPresentationController?.barButtonItem = navigationItem.leftBarButtonItem
-        present(share, animated: true)
+    @objc private func openBatteryHistory() {
+        navigationController?.pushViewController(BatteryHistoryController(), animated: true)
     }
     deinit { refreshTimer?.invalidate() }
 }

@@ -80,10 +80,10 @@ final class RecoveryAccessoryBinding {
         let computer = ASDiscoveryDescriptor()
         computer.bluetoothServiceUUID = CBUUID(string: BLERecoveryLab.service)
         computer.bluetoothNameSubstring = "RN12108"
-        let items = [ASPickerDisplayItem(name: "Relay 语音手表", productImage: image, descriptor: descriptor),
+        let items = [ASPickerDisplayItem(name: "relay watch", productImage: image, descriptor: descriptor),
                      ASPickerDisplayItem(name: "电脑模拟按钮", productImage: image, descriptor: computer)]
         // Adding a new device must discover nearby hardware, never migrate the saved PC identifier.
-        DeviceDiagnostics.shared.log("LAB ASK 查找新设备：Relay 语音手表 / 电脑模拟按钮；已授权=\(session.accessories.count)")
+        DeviceDiagnostics.shared.log("LAB ASK 查找新设备：relay watch / 电脑模拟按钮；已授权=\(session.accessories.count)")
         presenting = true
         onBeforePicker?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

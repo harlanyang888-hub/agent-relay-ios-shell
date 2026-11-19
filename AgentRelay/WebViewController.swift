@@ -20,19 +20,7 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         syncCookiesToWearable()
         setupIndicator()
         loadInitialURL()
-        let deviceTestButton = UIButton(type: .system)
-        deviceTestButton.setTitle("穿戴设备", for: .normal)
-        deviceTestButton.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.95)
-        deviceTestButton.layer.cornerRadius = 14
-        deviceTestButton.translatesAutoresizingMaskIntoConstraints = false
-        deviceTestButton.addTarget(self, action: #selector(openDeviceDiagnostics), for: .touchUpInside)
-        view.addSubview(deviceTestButton)
-        NSLayoutConstraint.activate([
-            deviceTestButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            deviceTestButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            deviceTestButton.widthAnchor.constraint(equalToConstant: 88),
-            deviceTestButton.heightAnchor.constraint(equalToConstant: 36)
-        ])
+
 
     }
 
@@ -45,6 +33,14 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         if BLERecoveryLab.usesASK, #available(iOS 17.4, *) { root = RelayWatchController() }
         else { root = DeviceDiagnosticsViewController() }
         let controller = UINavigationController(rootViewController: root)
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = UIColor(red: 10/255, green: 11/255, blue: 13/255, alpha: 1)
+        appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        controller.navigationBar.standardAppearance = appearance
+        controller.navigationBar.scrollEdgeAppearance = appearance
+        controller.navigationBar.compactAppearance = appearance
+        controller.overrideUserInterfaceStyle = .dark
         controller.modalPresentationStyle = .fullScreen
         present(controller, animated: true)
     }
@@ -106,6 +102,36 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         """
         let userScript = WKUserScript(source: bridgeScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         userContentController.addUserScript(userScript)
+        // Adapt the existing footer slot inside the native shell. No overlay,
+        // and no change to the web app's recording or navigation handlers.
+        let watchEntryScript = """
+        (() => {
+          if (location.origin !== 'https://complicated.taildbe095.ts.net:8443') return;
+          const icon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="5" width="12" height="14" rx="4"/><path d="M9 5V2h6v3M9 19v3h6v-3M18 10h2v4h-2"/></svg>';
+          const update = () => {
+            document.querySelectorAll('.panel-foot').forEach(footer => {
+              const logout = footer.querySelector('button[aria-label="退出登录"]');
+              if (!logout) return;
+              if (!logout.hidden) logout.hidden = true;
+              if (logout.style.display !== 'none') logout.style.display = 'none';
+              if (footer.querySelector('[data-relay-watch-entry]')) return;
+              const button = document.createElement('button');
+              button.type = 'button'; button.className = logout.className;
+              button.dataset.relayWatchEntry = 'true';
+              button.setAttribute('aria-label', 'relay watch'); button.title = 'relay watch';
+              button.innerHTML = icon;
+              button.addEventListener('click', event => {
+                event.preventDefault(); event.stopPropagation();
+                window.webkit.messageHandlers.wearableBridge.postMessage({action:'openWearable'});
+              });
+              logout.insertAdjacentElement('afterend', button);
+            });
+          };
+          new MutationObserver(update).observe(document.documentElement, {childList:true,subtree:true});
+          update();
+        })();
+        """
+        userContentController.addUserScript(WKUserScript(source: watchEntryScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -199,6 +225,9 @@ class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, W
         }
 
         switch action {
+        case "openWearable":
+            guard message.frameInfo.isMainFrame, webView.url?.host == "complicated.taildbe095.ts.net", presentedViewController == nil else { return }
+            openDeviceDiagnostics()
         case "startListening":
             _ = BLEProbe.shared
         case "stopListening":

@@ -165,10 +165,11 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func authorizedButtonName(_ id: UUID) -> String {
         if let peripheral = selected, peripheral.identifier == id,
-           peripheral.name?.contains("AgentRelay-Watch") == true { return "Relay 语音手表" }
+           peripheral.name?.contains("AgentRelay-Watch") == true { return "relay watch" }
         guard #available(iOS 18.0, *), let binding = accessoryBinding as? RecoveryAccessoryBinding,
               let accessory = binding.session.accessories.first(where: { $0.bluetoothIdentifier == id }) else { return "语音按钮" }
         let name = accessory.displayName
+        if name == "Relay 语音手表" || name == "AgentRelay-Watch" { return "relay watch" }
         if name.contains("RN12108") || name.contains("恢复测试") { return "电脑模拟按钮" }
         return name.isEmpty ? "语音按钮" : name
     }

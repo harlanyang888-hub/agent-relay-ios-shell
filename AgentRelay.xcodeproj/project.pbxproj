@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        11000019 /* BatteryHistoryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000019; };
         11000017 /* WatchDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000017; };
         11000018 /* RelayWatchController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000018; };
         11000016 /* WatchBattery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21000016; };
@@ -51,6 +52,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        21000019 /* BatteryHistoryController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryHistoryController.swift; sourceTree = "<group>"; };
         21000017 /* WatchDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDashboardView.swift; sourceTree = "<group>"; };
         21000018 /* RelayWatchController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayWatchController.swift; sourceTree = "<group>"; };
         21000016 /* WatchBattery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchBattery.swift; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
                 21000016 /* WatchBattery.swift */,
                 21000017 /* WatchDashboardView.swift */,
                 21000018 /* RelayWatchController.swift */,
+                21000019 /* BatteryHistoryController.swift */,
                 21000013 /* WatchVoiceSession.swift */,
                 21000014 /* WatchAudioMerge.swift */,
                 21000015 /* SystemAudioCapture.swift */,
@@ -251,6 +254,7 @@
                 11000016 /* WatchBattery.swift in Sources */,
                 11000017 /* WatchDashboardView.swift in Sources */,
                 11000018 /* RelayWatchController.swift in Sources */,
+                11000019 /* BatteryHistoryController.swift in Sources */,
                 11000013 /* WatchVoiceSession.swift in Sources */,
                 11000014 /* WatchAudioMerge.swift in Sources */,
                 11000015 /* SystemAudioCapture.swift in Sources */,
