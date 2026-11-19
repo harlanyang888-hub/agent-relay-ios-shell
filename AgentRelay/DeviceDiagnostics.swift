@@ -565,6 +565,12 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        guard peripheral.identifier == selected?.identifier else { return }
+        DeviceDiagnostics.shared.log("BLE 服务表已更新，重新发现设备功能")
+        peripheral.discoverServices(nil)
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard peripheral.identifier == selected?.identifier else { return }
         if let error = error { DeviceDiagnostics.shared.log("BLE 特征错误 \(error)"); return }

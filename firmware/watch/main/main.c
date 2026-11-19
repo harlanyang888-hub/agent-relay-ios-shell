@@ -26,6 +26,7 @@
 static const ble_uuid128_t service_uuid=UUID(0x00), event_uuid=UUID(0x01), state_uuid=UUID(0x02), identity_uuid=UUID(0x03);
 static const ble_uuid128_t battery_uuid=UUID(0x04);
 static uint16_t battery_handle;
+static bool gatt_schema_changed;
 static const char *TAG="relay-watch";
 static uint8_t identity[16], own_type;
 static uint16_t event_handle;
@@ -149,6 +150,17 @@ static void advertise(void) {
 static void synchronized(void) {
     static bool battery_started=false;
     if(!battery_started) {battery_started=true;watch_battery_start(battery_handle);}
+    if(gatt_schema_changed) {
+        // Persist the Service Changed indication for bonded, currently absent
+        // phones before advertising. Never clear their keys to refresh a cache.
+        ble_svc_gatt_changed(1,UINT16_MAX);
+        nvs_handle_t store;
+        if(nvs_open("relay_watch",NVS_READWRITE,&store)==ESP_OK) {
+            if(nvs_set_u32(store,"gatt_schema",2)==ESP_OK && nvs_commit(store)==ESP_OK) gatt_schema_changed=false;
+            nvs_close(store);
+        }
+        ESP_LOGI(TAG,"GATT schema 2: service change queued for bonded phones");
+    }
     // ESP32 factory public identity remains stable across normal resets and battery loss.
     int rc=ble_hs_util_ensure_addr(0);assert(rc==0);
     rc=ble_hs_id_infer_auto(0,&own_type);assert(rc==0);advertise();
@@ -179,7 +191,10 @@ void app_main(void) {
     nvs_handle_t store;ESP_ERROR_CHECK(nvs_open("relay_watch",NVS_READWRITE,&store));
     size_t length=sizeof(identity);esp_err_t rc=nvs_get_blob(store,"identity",identity,&length);
     if(rc==ESP_ERR_NVS_NOT_FOUND) {esp_fill_random(identity,16);identity[6]=(identity[6]&15)|64;identity[8]=(identity[8]&63)|128;ESP_ERROR_CHECK(nvs_set_blob(store,"identity",identity,16));ESP_ERROR_CHECK(nvs_commit(store));}
-    else {ESP_ERROR_CHECK(rc);assert(length==16);}nvs_close(store);
+    else {ESP_ERROR_CHECK(rc);assert(length==16);}
+    uint32_t schema=0;
+    gatt_schema_changed=nvs_get_u32(store,"gatt_schema",&schema)!=ESP_OK || schema!=2;
+    nvs_close(store);
     gpio_config_t buttons={.pin_bit_mask=1ULL<<0,.mode=GPIO_MODE_INPUT,.pull_up_en=GPIO_PULLUP_ENABLE};ESP_ERROR_CHECK(gpio_config(&buttons));
     gpio_config_t power_input={.pin_bit_mask=1ULL<<10,.mode=GPIO_MODE_INPUT,.pull_down_en=GPIO_PULLDOWN_ENABLE};ESP_ERROR_CHECK(gpio_config(&power_input));
     gpio_config_t motor={.pin_bit_mask=1ULL<<18,.mode=GPIO_MODE_OUTPUT};ESP_ERROR_CHECK(gpio_config(&motor));gpio_set_level(GPIO_NUM_18,0);
