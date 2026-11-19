@@ -19,10 +19,13 @@
 #include "watch_protocol.h"
 #include "pairing_reset.h"
 #include "watch_link.h"
+#include "watch_battery.h"
 
 // All BLE callbacks enqueue events. Only the application task owns recording state.
 #define UUID(x) BLE_UUID128_INIT(0x80,0x81,0x4b,0xa3,0xf2,0x73,0xd5,0xa2,0x93,0x4e,0x44,0x6b,x,0x02,0xd7,0xa8)
 static const ble_uuid128_t service_uuid=UUID(0x00), event_uuid=UUID(0x01), state_uuid=UUID(0x02), identity_uuid=UUID(0x03);
+static const ble_uuid128_t battery_uuid=UUID(0x04);
+static uint16_t battery_handle;
 static const char *TAG="relay-watch";
 static uint8_t identity[16], own_type;
 static uint16_t event_handle;
@@ -69,6 +72,10 @@ static int access_value(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctx
     }
     if(arg==(void*)3 && ctxt->op==BLE_GATT_ACCESS_OP_READ_CHR)
         return os_mbuf_append(ctxt->om,identity,16)==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    if(arg==(void*)4 && ctxt->op==BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint8_t data[12];watch_battery_packet(data);
+        return os_mbuf_append(ctxt->om,data,12)==0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
     return BLE_ATT_ERR_UNLIKELY;
 }
 static const struct ble_gatt_svc_def services[]={
@@ -77,6 +84,8 @@ static const struct ble_gatt_svc_def services[]={
          .flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_NOTIFY},
         {.uuid=&state_uuid.u,.access_cb=access_value,.arg=(void*)2,.flags=BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_ENC},
         {.uuid=&identity_uuid.u,.access_cb=access_value,.arg=(void*)3,.flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC},
+        {.uuid=&battery_uuid.u,.access_cb=access_value,.arg=(void*)4,.val_handle=&battery_handle,
+         .flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_ENC|BLE_GATT_CHR_F_NOTIFY},
         {0}}}, {0}};
 
 static void enqueue(enum event_kind kind,uint16_t handle,bool enabled) {
@@ -89,6 +98,7 @@ static int gap_event(struct ble_gap_event *event,void *arg) {
     switch(event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if(event->connect.status==0) {
+            watch_battery_link(event->connect.conn_handle);
             enqueue(LINK_UP,event->connect.conn_handle,true);
             struct ble_gap_conn_desc desc;
             bool encrypted=ble_gap_conn_find(event->connect.conn_handle,&desc)==0 && desc.sec_state.encrypted;
@@ -99,6 +109,7 @@ static int gap_event(struct ble_gap_event *event,void *arg) {
         ESP_LOGI(TAG,"GAP connect status=%d handle=%u",event->connect.status,event->connect.conn_handle);
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        watch_battery_link(BLE_HS_CONN_HANDLE_NONE);
         ESP_LOGI(TAG,"GAP disconnect handle=%u reason=%d",event->disconnect.conn.conn_handle,event->disconnect.reason);
         enqueue(LINK_DOWN,event->disconnect.conn.conn_handle,false);advertise();break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -136,6 +147,8 @@ static void advertise(void) {
     ESP_LOGI(TAG,"advertising rc=%d",rc);
 }
 static void synchronized(void) {
+    static bool battery_started=false;
+    if(!battery_started) {battery_started=true;watch_battery_start(battery_handle);}
     // ESP32 factory public identity remains stable across normal resets and battery loss.
     int rc=ble_hs_util_ensure_addr(0);assert(rc==0);
     rc=ble_hs_id_infer_auto(0,&own_type);assert(rc==0);advertise();

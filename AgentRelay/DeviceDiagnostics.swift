@@ -397,6 +397,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     private func handleDisconnection(_ central: CBCentralManager, peripheral: CBPeripheral, error: Error?, systemReconnecting: Bool) {
+        WatchBatteryStore.shared.disconnected(peripheral.identifier)
         guard peripheral.identifier == selected?.identifier else { return }
         authenticatedIdentity = false
         notificationsReady = false
@@ -502,6 +503,7 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         guard !BLERecoveryLab.enabled || peripheral.identifier == selected?.identifier else { return }
+        WatchBatteryStore.shared.attach(peripheral.identifier)
         authenticatedIdentity = false
         connectionRetry?.cancel()
         connectionFailures = 0
@@ -565,6 +567,13 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard peripheral.identifier == selected?.identifier else { return }
         if let error = error { DeviceDiagnostics.shared.log("BLE 特征错误 \(error)"); return }
         for characteristic in service.characteristics ?? [] {
+            if service.uuid == buttonService,
+               characteristic.uuid == CBUUID(string: "A8D70204-6B44-4E93-A2D5-73F2A34B8180") {
+                WatchBatteryStore.shared.attach(peripheral.identifier)
+                peripheral.readValue(for: characteristic)
+                peripheral.setNotifyValue(true, for: characteristic)
+                continue
+            }
             if BLERecoveryLab.enabled, service.uuid == buttonService {
                 if characteristic.uuid == CBUUID(string: BLERecoveryLab.ack) { ackCharacteristic = characteristic }
                 if characteristic.uuid == buttonEvent { eventCharacteristic = characteristic }
@@ -604,6 +613,12 @@ final class BLEProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard peripheral.identifier == selected?.identifier else { return }
+        if characteristic.service?.uuid == buttonService,
+           characteristic.uuid == CBUUID(string: "A8D70204-6B44-4E93-A2D5-73F2A34B8180") {
+            WatchBatteryStore.shared.receive(characteristic.value, from: peripheral.identifier, error: error)
+            DeviceDiagnostics.shared.log("BATTERY \(WatchBatteryStore.shared.title) \(WatchBatteryStore.shared.detail)")
+            return
+        }
         let service = characteristic.service?.uuid.uuidString ?? "?"
         let data = characteristic.value ?? Data()
         if BLERecoveryLab.enabled, characteristic.uuid == CBUUID(string: BLERecoveryLab.identity) {
